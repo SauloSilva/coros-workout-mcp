@@ -48,7 +48,7 @@ export async function login(
   password: string,
   region: Region = "eu"
 ): Promise<AuthData> {
-  const apiUrl = REGION_URLS[region];
+  const apiUrl = REGION_URLS[region] ?? REGION_URLS["eu"];
   const res = await fetch(`${apiUrl}/account/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -101,7 +101,8 @@ export async function getValidAuth(): Promise<AuthData | null> {
   //    even if multiple tool calls arrive simultaneously
   const email = process.env.COROS_EMAIL;
   const password = process.env.COROS_PASSWORD;
-  const region = (process.env.COROS_REGION as Region) || "eu";
+  const rawRegion = process.env.COROS_REGION?.toLowerCase();
+  const region: Region = rawRegion === "us" || rawRegion === "eu" ? rawRegion : "eu";
 
   if (email && password) {
     if (!loginPromise) {
@@ -119,11 +120,10 @@ export async function getValidAuth(): Promise<AuthData | null> {
   return null;
 }
 
-/** Force a fresh login, clearing cached auth. Useful after token rejection. */
-export async function forceReauth(): Promise<AuthData | null> {
+/** Clear the cached auth so the next getValidAuth() call triggers a fresh login. */
+export function clearAuthCache(): void {
   memoryAuth = null;
   loginPromise = null;
-  return getValidAuth();
 }
 
 // --- API helpers ---

@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import {
   login,
   getValidAuth,
-  forceReauth,
+  clearAuthCache,
   resolveExercises,
   calculateWorkout,
   addWorkout,
@@ -53,8 +53,8 @@ export function createCorosServer(): McpServer {
           };
         }
 
-        // forceReauth clears the memory cache before logging in
-      await forceReauth();
+        // Clear cache so this explicit login becomes the new source of truth
+      clearAuthCache();
       const auth = await login(loginEmail, loginPassword, loginRegion);
         return {
           content: [
