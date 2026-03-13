@@ -70,35 +70,60 @@ export async function login(
     timestamp: Date.now(),
   };
   storeAuth(auth);
+  memoryAuth = auth;
   return auth;
 }
 
 const TOKEN_MAX_AGE_MS = 20 * 60 * 60 * 1000; // 20 hours
+
+// In-memory cache prevents multiple concurrent logins from invalidating each other
+let memoryAuth: AuthData | null = null;
+let loginPromise: Promise<AuthData> | null = null;
 
 function isTokenFresh(auth: AuthData): boolean {
   if (!auth.timestamp) return false;
   return Date.now() - auth.timestamp < TOKEN_MAX_AGE_MS;
 }
 
-/** Get valid auth from stored file or env vars */
+/** Get valid auth from memory cache, stored file, or env vars (with login deduplication) */
 export async function getValidAuth(): Promise<AuthData | null> {
+  // 1. Memory cache — fastest path, shared across all concurrent calls
+  if (memoryAuth && isTokenFresh(memoryAuth)) return memoryAuth;
+
+  // 2. File cache — persists across process restarts
+  const stored = loadAuth();
+  if (stored && isTokenFresh(stored)) {
+    memoryAuth = stored;
+    return memoryAuth;
+  }
+
+  // 3. Re-authenticate via env vars — deduplicated so only ONE login happens
+  //    even if multiple tool calls arrive simultaneously
   const email = process.env.COROS_EMAIL;
   const password = process.env.COROS_PASSWORD;
   const region = (process.env.COROS_REGION as Region) || "eu";
 
-  // Try stored auth only if it's still fresh
-  const stored = loadAuth();
-  if (stored && isTokenFresh(stored)) return stored;
-
-  // Token is stale or missing — re-authenticate using env vars
   if (email && password) {
-    return login(email, password, region);
+    if (!loginPromise) {
+      loginPromise = login(email, password, region).finally(() => {
+        loginPromise = null;
+      });
+    }
+    memoryAuth = await loginPromise;
+    return memoryAuth;
   }
 
-  // No env vars — return stale stored token as last resort
+  // 4. Last resort: stale stored token
   if (stored) return stored;
 
   return null;
+}
+
+/** Force a fresh login, clearing cached auth. Useful after token rejection. */
+export async function forceReauth(): Promise<AuthData | null> {
+  memoryAuth = null;
+  loginPromise = null;
+  return getValidAuth();
 }
 
 // --- API helpers ---
