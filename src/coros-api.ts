@@ -73,19 +73,30 @@ export async function login(
   return auth;
 }
 
+const TOKEN_MAX_AGE_MS = 20 * 60 * 60 * 1000; // 20 hours
+
+function isTokenFresh(auth: AuthData): boolean {
+  if (!auth.timestamp) return false;
+  return Date.now() - auth.timestamp < TOKEN_MAX_AGE_MS;
+}
+
 /** Get valid auth from stored file or env vars */
 export async function getValidAuth(): Promise<AuthData | null> {
-  // Try stored auth first
-  const stored = loadAuth();
-  if (stored) return stored;
-
-  // Try env vars
   const email = process.env.COROS_EMAIL;
   const password = process.env.COROS_PASSWORD;
   const region = (process.env.COROS_REGION as Region) || "eu";
+
+  // Try stored auth only if it's still fresh
+  const stored = loadAuth();
+  if (stored && isTokenFresh(stored)) return stored;
+
+  // Token is stale or missing — re-authenticate using env vars
   if (email && password) {
     return login(email, password, region);
   }
+
+  // No env vars — return stale stored token as last resort
+  if (stored) return stored;
 
   return null;
 }
@@ -100,6 +111,8 @@ function apiHeaders(auth: AuthData): Record<string, string> {
   };
 }
 
+const AUTH_ERROR_CODES = new Set(["0002", "0003", "1002"]);
+
 async function apiPost(auth: AuthData, path: string, body: unknown): Promise<unknown> {
   const apiUrl = REGION_URLS[auth.region];
   const res = await fetch(`${apiUrl}${path}`, {
@@ -109,6 +122,9 @@ async function apiPost(auth: AuthData, path: string, body: unknown): Promise<unk
   });
   const data = await res.json();
   if (data.result !== "0000") {
+    if (AUTH_ERROR_CODES.has(data.result)) {
+      throw new Error(`COROS auth error (${path}): token invalid or expired. Use authenticate_coros to re-login.`);
+    }
     throw new Error(`COROS API error (${path}): ${data.message || data.result}`);
   }
   return data;
@@ -130,6 +146,9 @@ async function apiGet(
   });
   const data = await res.json();
   if (data.result !== "0000") {
+    if (AUTH_ERROR_CODES.has(data.result)) {
+      throw new Error(`COROS auth error (${path}): token invalid or expired. Use authenticate_coros to re-login.`);
+    }
     throw new Error(`COROS API error (${path}): ${data.message || data.result}`);
   }
   return data;
