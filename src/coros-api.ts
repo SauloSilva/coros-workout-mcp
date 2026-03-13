@@ -525,6 +525,224 @@ export async function addWorkout(
   return apiPost(auth, "/training/program/add", payload);
 }
 
+// --- Running Workout ---
+
+/**
+ * Step types matching COROS Training Hub UI:
+ * warmup=aquecimento, active=treino, rest=rest, cooldown=desaquecimento, interval=intervalo
+ */
+export type RunStepType = "warmup" | "active" | "rest" | "cooldown" | "interval";
+
+/**
+ * Intensity target type:
+ * open=sem alvo, pace=ritmo (s/km), heartrate=freq. cardíaca (bpm)
+ */
+export type RunTargetType = "open" | "pace" | "heartrate";
+
+/**
+ * Duration/objective type:
+ * time=tempo (seconds), distance=distância (meters),
+ * training_load=carga de treino, open=aberto (sem objetivo)
+ */
+export type RunDurationType = "time" | "distance" | "training_load" | "open";
+
+export interface RunStep {
+  type: RunStepType;
+  /**
+   * Duration value: seconds (time), meters (distance), load units (training_load),
+   * or 0 (open). Ignored when durationType=open.
+   */
+  durationValue: number;
+  durationType: RunDurationType;
+  /** Intensity target type (default: open) */
+  targetType?: RunTargetType;
+  /** Pace range low in s/km (e.g. 270 = 4:30/km). Required if targetType=pace */
+  paceLow?: number;
+  /** Pace range high in s/km (e.g. 300 = 5:00/km). Required if targetType=pace */
+  paceHigh?: number;
+  /** HR range low in bpm. Required if targetType=heartrate */
+  hrLow?: number;
+  /** HR range high in bpm. Required if targetType=heartrate */
+  hrHigh?: number;
+  /** Repeat this step N times (creates N copies in the sequence) */
+  repeat?: number;
+}
+
+// exerciseType codes confirmed from COROS API:
+// 0=aquecimento, 1=treino, 2=rest, 3=desaquecimento, 4=intervalo
+const RUN_EXERCISE_TYPE: Record<RunStepType, number> = {
+  warmup: 0,
+  active: 1,
+  rest: 2,
+  cooldown: 3,
+  interval: 4,
+};
+
+// targetType codes confirmed from COROS API:
+// 0=aberto, 2=tempo (s), 3=distância (m), 1=carga de treino
+const RUN_DURATION_TYPE: Record<RunDurationType, number> = {
+  open: 0,
+  training_load: 1,
+  time: 2,
+  distance: 3,
+};
+
+const RUN_STEP_NAMES: Record<RunStepType, string> = {
+  warmup: "Aquecimento",
+  active: "Treino",
+  rest: "Rest",
+  cooldown: "Desaquecimento",
+  interval: "Intervalo",
+};
+
+function buildRunStep(step: RunStep, index: number): object {
+  // intensityType: 0=open, 1=pace (ms/km), 2=heartrate (bpm)
+  let intensityType = 0;
+  let intensityValue = 0;      // low bound (pace ms/km or HR bpm)
+  let intensityValueExtend: number | undefined; // high bound
+
+  const tgt = step.targetType ?? "open";
+  if (tgt === "pace" && (step.paceLow != null || step.paceHigh != null)) {
+    intensityType = 1;
+    // COROS stores pace in ms/km (s/km * 1000)
+    // intensityValue = low (faster), intensityValueExtend = high (slower)
+    intensityValue = (step.paceLow ?? step.paceHigh ?? 300) * 1000;
+    if (step.paceHigh != null) {
+      intensityValueExtend = step.paceHigh * 1000;
+    }
+  } else if (tgt === "heartrate" && (step.hrLow != null || step.hrHigh != null)) {
+    intensityType = 2;
+    intensityValue = step.hrLow ?? step.hrHigh ?? 0;
+    if (step.hrHigh != null) {
+      intensityValueExtend = step.hrHigh;
+    }
+  }
+
+  const base: Record<string, unknown> = {
+    name: RUN_STEP_NAMES[step.type],
+    exerciseType: RUN_EXERCISE_TYPE[step.type],
+    sets: 1,
+    targetType: RUN_DURATION_TYPE[step.durationType],
+    targetValue: step.durationType === "open" ? 0 : step.durationValue,
+    intensityType,
+    intensityValue,
+    restValue: 0,
+    sortNo: (index + 1) * 16777216,
+    defaultOrder: 0,
+    groupId: "0",
+    isGroup: false,
+    isDefaultAdd: 0,
+    isIntensityPercent: false,
+    sportType: 1,
+    status: 1,
+    videoInfos: [],
+  };
+
+  if (intensityValueExtend != null) {
+    base.intensityValueExtend = intensityValueExtend;
+  }
+
+  return base;
+}
+
+function buildRunningPayload(
+  name: string,
+  overview: string,
+  steps: RunStep[]
+): object {
+  // Expand repeats
+  const expanded: RunStep[] = [];
+  for (const step of steps) {
+    const times = step.repeat ?? 1;
+    for (let i = 0; i < times; i++) expanded.push(step);
+  }
+
+  const exercises = expanded.map((step, i) => buildRunStep(step, i));
+  const totalDurationSec = expanded.reduce((sum, step) => {
+    if (step.durationType === "time") return sum + step.durationValue;
+    // Estimate from pace for distance steps
+    const paceSkm = step.paceLow ?? step.paceHigh ?? 300;
+    return sum + Math.round((step.durationValue / 1000) * paceSkm);
+  }, 0);
+
+  return {
+    access: 1,
+    authorId: "0",
+    createTimestamp: 0,
+    distance: 0,
+    duration: totalDurationSec,
+    essence: 0,
+    estimatedType: 0,
+    estimatedValue: 0,
+    exerciseNum: exercises.length,
+    exercises,
+    headPic: "",
+    id: "0",
+    idInPlan: "0",
+    name,
+    nickname: "",
+    originEssence: 0,
+    overview,
+    pbVersion: 2,
+    planIdIndex: 0,
+    poolLength: 2500,
+    profile: "",
+    referExercise: { intensityType: 0, hrType: 0, valueType: 0 },
+    sex: 0,
+    shareUrl: "",
+    simple: false,
+    sourceUrl: DEFAULT_SOURCE_URL,
+    sportType: 1,
+    star: 0,
+    subType: 65535,
+    targetType: 0,
+    targetValue: 0,
+    thirdPartyId: 0,
+    totalSets: exercises.length,
+    trainingLoad: 0,
+    type: 0,
+    unit: 0,
+    userId: "0",
+    version: 0,
+    videoCoverUrl: "",
+    videoUrl: "",
+    poolLengthId: 1,
+    poolLengthUnit: 2,
+    sourceId: "0",
+  };
+}
+
+export async function createRunningWorkout(
+  auth: AuthData,
+  name: string,
+  overview: string,
+  steps: RunStep[]
+): Promise<{ duration: number; totalSteps: number }> {
+  const payload = buildRunningPayload(name, overview, steps);
+
+  // Calculate
+  const calcResult = (await apiPost(auth, "/training/program/calculate", payload)) as {
+    data: { planDuration: number; planSets: number; planTrainingLoad: number };
+  };
+
+  // Add with calculated values
+  const addPayload = {
+    ...(payload as Record<string, unknown>),
+    duration: calcResult.data.planDuration || (payload as Record<string, unknown>).duration,
+    distance: "0",
+    sets: calcResult.data.planSets,
+    totalSets: calcResult.data.planSets,
+    pitch: 0,
+  };
+
+  await apiPost(auth, "/training/program/add", addPayload);
+
+  return {
+    duration: addPayload.duration as number,
+    totalSteps: calcResult.data.planSets,
+  };
+}
+
 export interface QueryOptions {
   name?: string;
   sportType?: number;

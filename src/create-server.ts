@@ -12,14 +12,19 @@ import {
   queryExerciseCatalog,
   fetchI18nStrings,
   buildCatalogFromRaw,
+  createRunningWorkout,
 } from "./coros-api.js";
+import type { RunStep, RunStepType, RunTargetType, RunDurationType } from "./coros-api.js";
 import {
   searchExercises,
   findByName,
+  findByCodeName,
+  findById,
   getAllExercises,
   reloadCatalog,
   getCatalogPath,
 } from "./exercise-catalog.js";
+import { PartCode } from "./types.js";
 import type { Region } from "./types.js";
 
 export function createCorosServer(): McpServer {
@@ -336,10 +341,10 @@ export function createCorosServer(): McpServer {
 
   server.tool(
     "list_workouts",
-    "List workouts from COROS Training Hub.",
+    "List workouts from COROS Training Hub. Use sportType=1 for running workouts, sportType=4 for strength workouts, sportType=0 for all.",
     {
       name: z.string().default("").describe("Filter by workout name (optional)"),
-      sportType: z.number().int().default(0).describe("Filter by sport type (0=all, 4=strength)"),
+      sportType: z.number().int().default(0).describe("Filter by sport type: 0=all, 1=running (corrida), 4=strength (musculação/força)"),
       limit: z.number().int().min(1).max(50).default(10).describe("Number of workouts to return"),
     },
     async ({ name, sportType, limit }) => {
@@ -361,26 +366,107 @@ export function createCorosServer(): McpServer {
           name,
           sportType,
           limitSize: limit,
-        })) as { data: Array<{ name: string; overview: string; sportType: number; duration: number; totalSets: number; exerciseNum: number; estimatedTime: number }> };
+        })) as {
+          data: Array<{
+            name: string;
+            overview: string;
+            sportType: number;
+            duration: number;
+            totalSets: number;
+            exerciseNum: number;
+            estimatedTime: number;
+            createTimestamp: number;
+            exercises: Array<Record<string, unknown>>;
+          }>;
+        };
 
         const workouts = result.data || [];
         if (workouts.length === 0) {
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: "No workouts found.",
-              },
-            ],
+            content: [{ type: "text" as const, text: "No workouts found." }],
           };
         }
+
+        const fmtPace = (v: number) => `${Math.floor(v / 60)}:${String(v % 60).padStart(2, "0")}/km`;
 
         const formatted = workouts
           .map((w) => {
             const durationMin = Math.round((w.estimatedTime || w.duration || 0) / 60);
-            return `- **${w.name}** (${durationMin} min, ${w.totalSets || 0} sets, ${w.exerciseNum || 0} exercises)${w.overview ? `\n  ${w.overview}` : ""}`;
+            const date = w.createTimestamp
+              ? new Date((w.createTimestamp as number) * 1000).toLocaleDateString("pt-BR")
+              : "";
+            const dateStr = date ? ` | ${date}` : "";
+            const isRunning = w.sportType === 1;
+            const sportLabel = isRunning ? "🏃 Corrida" : "💪 Musculação";
+
+            const header = isRunning
+              ? `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.exerciseNum || 0} etapas${dateStr})`
+              : `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.totalSets || 0} sets | ${w.exerciseNum || 0} exercises${dateStr})`;
+
+            const steps = (w.exercises || [])
+              .map((ex) => {
+                if (isRunning) {
+                  // exerciseType: 0=aquecimento,1=treino,2=rest,3=desaquecimento,4=intervalo
+                  const STEP_NAMES: Record<number, string> = {
+                    0: "🔥 Aquecimento",
+                    1: "🏃 Treino",
+                    2: "⏸ Rest",
+                    3: "❄️ Desaquecimento",
+                    4: "⚡ Intervalo",
+                  };
+                  const stepName = STEP_NAMES[(ex.exerciseType as number)] ?? `Tipo ${ex.exerciseType}`;
+                  // targetType: 0=aberto,1=carga,2=tempo(s),3=distância(m)
+                  const targetType = ex.targetType as number;
+                  const targetVal = ex.targetValue as number;
+                  let dur: string;
+                  if (targetType === 0) dur = "aberto";
+                  else if (targetType === 2) dur = `${Math.round(targetVal / 60)}min`;
+                  else if (targetType === 3) dur = `${(targetVal / 1000).toFixed(1)}km`;
+                  else dur = `${targetVal} (carga)`;
+                  // intensityType: 0=aberto,1=ritmo(ms/km),2=FC(bpm)
+                  const intensityType = ex.intensityType as number;
+                  const intensityLow = ex.intensityValue as number;
+                  const intensityHigh = (ex as Record<string, unknown>).intensityValueExtend as number | undefined;
+                  let target = "";
+                  if (intensityType === 1 && intensityLow > 0) {
+                    // pace stored in ms/km → convert to s/km
+                    const low = fmtPace(Math.round(intensityLow / 1000));
+                    if (intensityHigh != null && intensityHigh > 0) {
+                      const high = fmtPace(Math.round(intensityHigh / 1000));
+                      target = ` @ ${low}-${high}/km`;
+                    } else {
+                      target = ` @ ${low}/km`;
+                    }
+                  } else if (intensityType === 2 && intensityLow > 0) {
+                    if (intensityHigh != null && intensityHigh > 0) {
+                      target = ` @ ${intensityLow}-${intensityHigh}bpm`;
+                    } else {
+                      target = ` @ ${intensityLow}bpm`;
+                    }
+                  }
+                  return `    • ${stepName}: ${dur}${target}`;
+                } else {
+                  // Strength step
+                  const typedEx = ex as { name: string; originId: string; exerciseType: number; sets: number; targetValue: number; targetType: number; intensityValue: number; restValue: number; part: number[] };
+                  if (typedEx.exerciseType === 1) {
+                    const label = typedEx.name === "T1120" ? "Warmup" : "Cool Down";
+                    return `    🔥 ${label} (${typedEx.targetValue}s)`;
+                  }
+                  const catalog = findByCodeName(typedEx.name) || findById(typedEx.originId);
+                  const exName = catalog?.name ?? typedEx.name;
+                  const targetUnit = typedEx.targetType === 3 ? "reps" : "s";
+                  const weight = typedEx.intensityValue > 0 ? ` @ ${(typedEx.intensityValue / 1000).toFixed(2).replace(/\.?0+$/, "")}kg` : "";
+                  const rest = typedEx.restValue > 0 ? ` | rest ${typedEx.restValue}s` : "";
+                  const partName = typedEx.part?.[0] != null ? (PartCode as Record<number, string>)[typedEx.part[0]] ?? "" : "";
+                  const partStr = partName ? ` [${partName}]` : "";
+                  return `    • ${exName}: ${typedEx.sets}x${typedEx.targetValue}${targetUnit}${weight}${rest}${partStr}`;
+                }
+              })
+              .join("\n");
+
+            return `${header}\n${steps}`;
           })
-          .join("\n");
+          .join("\n\n");
 
         return {
           content: [
@@ -396,6 +482,134 @@ export function createCorosServer(): McpServer {
             {
               type: "text" as const,
               text: `Failed to list workouts: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  const RunStepSchema = z.object({
+    type: z
+      .enum(["warmup", "active", "rest", "cooldown", "interval"])
+      .describe("Step type: warmup=aquecimento, active=treino, rest=rest, cooldown=desaquecimento, interval=intervalo"),
+    durationType: z
+      .enum(["time", "distance", "training_load", "open"])
+      .describe("Duration unit: 'time' (seconds) or 'distance' (meters) or 'training_load' (carga de treino) or 'open' (aberto/sem objetivo)"),
+    durationValue: z
+      .number()
+      .int()
+      .min(0)
+      .describe("Duration value in seconds (if time) or meters (if distance). E.g. 600=10min, 1000=1km. Use 0 when durationType='open'."),
+    targetType: z
+      .enum(["open", "pace", "heartrate"])
+      .default("open")
+      .describe("Target type: 'open' (no target), 'pace' (s/km), 'heartrate' (bpm)"),
+    paceLow: z
+      .number()
+      .int()
+      .optional()
+      .describe("Minimum pace in s/km (e.g. 270 = 4:30/km). Use with targetType='pace'"),
+    paceHigh: z
+      .number()
+      .int()
+      .optional()
+      .describe("Maximum pace in s/km (e.g. 300 = 5:00/km). Use with targetType='pace'"),
+    hrLow: z.number().int().optional().describe("Minimum heart rate in bpm. Use with targetType='heartrate'"),
+    hrHigh: z.number().int().optional().describe("Maximum heart rate in bpm. Use with targetType='heartrate'"),
+    repeat: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Repeat this step N times (useful for intervals). Default: 1"),
+  });
+
+  server.tool(
+    "create_running_workout",
+    "Create a running workout (with intervals, pace targets, or heart rate zones) on COROS Training Hub. Supports warmup, active (treino), rest, cooldown, and interval steps. Each step has a duration type (time/distance/training_load/open), a target type (open/pace/heartrate), and optional pace or HR range. Pace is in seconds/km (e.g. 300 = 5:00/km).",
+    {
+      name: z.string().describe("Workout name (e.g. 'Intervalos 5x1km')"),
+      overview: z.string().default("").describe("Workout description"),
+      steps: z.array(RunStepSchema).min(1).describe("Array of running steps"),
+    },
+    async ({ name, overview, steps }) => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) {
+          return {
+            content: [{ type: "text" as const, text: "Not authenticated. Use authenticate_coros first." }],
+            isError: true,
+          };
+        }
+
+        const runSteps: RunStep[] = steps.map((s) => ({
+          type: s.type as RunStepType,
+          durationType: s.durationType as RunDurationType,
+          durationValue: s.durationValue,
+          targetType: s.targetType as RunTargetType,
+          paceLow: s.paceLow,
+          paceHigh: s.paceHigh,
+          hrLow: s.hrLow,
+          hrHigh: s.hrHigh,
+          repeat: s.repeat,
+        }));
+
+        const result = await createRunningWorkout(auth, name, overview, runSteps);
+        const durationMin = Math.round(result.duration / 60);
+
+        const fmtPaceSummary = (v: number) => `${Math.floor(v / 60)}:${String(v % 60).padStart(2, "0")}`;
+        const stepTypeLabels: Record<string, string> = {
+          warmup: "Aquecimento", active: "Treino", rest: "Rest",
+          cooldown: "Desaquecimento", interval: "Intervalo",
+        };
+        const stepSummary = steps
+          .map((s) => {
+            const times = s.repeat && s.repeat > 1 ? `${s.repeat}x ` : "";
+            const label = stepTypeLabels[s.type] ?? s.type;
+            let dur: string;
+            if (s.durationType === "time") dur = `${Math.round(s.durationValue / 60)}min`;
+            else if (s.durationType === "distance") dur = `${(s.durationValue / 1000).toFixed(1)}km`;
+            else if (s.durationType === "open") dur = "aberto";
+            else dur = `${s.durationValue} (carga)`;
+            let target = "";
+            if (s.targetType === "pace" && (s.paceLow != null || s.paceHigh != null)) {
+              const low = s.paceLow != null ? fmtPaceSummary(s.paceLow) : null;
+              const high = s.paceHigh != null ? fmtPaceSummary(s.paceHigh) : null;
+              if (low && high) target = ` @ ${low}-${high}/km`;
+              else if (low) target = ` @ ${low}/km`;
+              else if (high) target = ` @ ${high}/km`;
+            } else if (s.targetType === "heartrate" && (s.hrLow != null || s.hrHigh != null)) {
+              if (s.hrLow != null && s.hrHigh != null) target = ` @ ${s.hrLow}-${s.hrHigh}bpm`;
+              else target = ` @ ${s.hrLow ?? s.hrHigh}bpm`;
+            }
+            return `  ${times}${label}: ${dur}${target}`;
+          })
+          .join("\n");
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: [
+                `Treino de corrida "${name}" criado com sucesso!`,
+                `Duração total: ~${durationMin} min | ${result.totalSteps} etapas`,
+                ``,
+                `Etapas:`,
+                stepSummary,
+                ``,
+                `O treino será sincronizado com seu relógio COROS.`,
+              ].join("\n"),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Falha ao criar treino de corrida: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
           isError: true,
