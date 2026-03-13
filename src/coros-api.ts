@@ -499,12 +499,12 @@ export async function calculateWorkout(
 ): Promise<CalculateResult> {
   const payload = buildWorkoutPayload(name, overview, exercisePayloads);
   const result = (await apiPost(auth, "/training/program/calculate", payload)) as {
-    data: { duration: number; totalSets: number; trainingLoad: number };
+    data: { planDuration: number; planSets: number; planTrainingLoad: number };
   };
   return {
-    duration: result.data.duration,
-    totalSets: result.data.totalSets,
-    trainingLoad: result.data.trainingLoad,
+    duration: result.data.planDuration,
+    totalSets: result.data.planSets,
+    trainingLoad: result.data.planTrainingLoad,
   };
 }
 
