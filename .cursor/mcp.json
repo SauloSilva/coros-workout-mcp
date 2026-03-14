@@ -7,7 +7,9 @@
         "COROS_EMAIL": "saulodasilvasantiago@gmail.com",
         "COROS_PASSWORD": "foodeu123",
         "COROS_REGION": "us",
-        "NODE_TLS_REJECT_UNAUTHORIZED": "0"
+        "NODE_TLS_REJECT_UNAUTHORIZED": "0",
+        "COROS_LTSP": "241",
+        "COROS_LTSP_UNIT": "s_per_km_v5"
       }
     }
   }

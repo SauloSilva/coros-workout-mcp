@@ -561,113 +561,373 @@ export interface RunStep {
   durationType: RunDurationType;
   /** Intensity target type (default: open) */
   targetType?: RunTargetType;
-  /** Pace range low in s/km (e.g. 270 = 4:30/km). Required if targetType=pace */
+  /** Absolute pace low in s/km (e.g. 270 = 4:30/km). Use with targetType=pace */
   paceLow?: number;
-  /** Pace range high in s/km (e.g. 300 = 5:00/km). Required if targetType=pace */
+  /** Absolute pace high in s/km (e.g. 300 = 5:00/km). Use with targetType=pace */
   paceHigh?: number;
+  /**
+   * Pace as % of LTSP — low bound (e.g. 79 = 79%). When set, uses intensityType=3
+   * which shows training zone labels in COROS app. Requires ltspSeconds.
+   */
+  paceLowPercent?: number;
+  /**
+   * Pace as % of LTSP — high bound (e.g. 86 = 86%). When set, uses intensityType=3.
+   */
+  paceHighPercent?: number;
   /** HR range low in bpm. Required if targetType=heartrate */
   hrLow?: number;
   /** HR range high in bpm. Required if targetType=heartrate */
   hrHigh?: number;
-  /** Repeat this step N times (creates N copies in the sequence) */
+  /** HR as % of LTHR — low bound (e.g. 90 = 90%). When set, uses isIntensityPercent=true */
+  hrLowPercent?: number;
+  /** HR as % of LTHR — high bound (e.g. 95 = 95%). */
+  hrHighPercent?: number;
+  /** Repeat this step N times using a group (native COROS structure) */
   repeat?: number;
+  /** Rest time in seconds between repeat sets (default: 0) */
+  repeatRestSeconds?: number;
 }
 
-// exerciseType codes confirmed from COROS API:
-// 0=aquecimento, 1=treino, 2=rest, 3=desaquecimento, 4=intervalo
+// exerciseType codes confirmed from COROS API (via /training/program/calculate response):
+// 1=warmup, 2=active/interval, 3=cooldown, 4=rest
 const RUN_EXERCISE_TYPE: Record<RunStepType, number> = {
-  warmup: 0,
-  active: 1,
-  rest: 2,
+  warmup: 1,
+  active: 2,
+  interval: 2,  // interval sprints are active steps (same type)
+  rest: 4,
   cooldown: 3,
-  interval: 4,
 };
 
 // targetType codes confirmed from COROS API:
-// 0=aberto, 2=tempo (s), 3=distância (m), 1=carga de treino
+// 0=open, 1=training_load, 2=time (seconds), 5=distance (centimeters)
 const RUN_DURATION_TYPE: Record<RunDurationType, number> = {
   open: 0,
   training_load: 1,
   time: 2,
-  distance: 3,
+  distance: 5,
 };
 
+// Native COROS T-code names — COROS app recognizes these and shows localized labels
 const RUN_STEP_NAMES: Record<RunStepType, string> = {
-  warmup: "Aquecimento",
-  active: "Treino",
-  rest: "Rest",
-  cooldown: "Desaquecimento",
-  interval: "Intervalo",
+  warmup: "T1120",
+  active: "T3001",
+  rest: "T3001",
+  cooldown: "T1122",
+  interval: "T3001",
 };
 
-function buildRunStep(step: RunStep, index: number): object {
-  // intensityType: 0=open, 1=pace (ms/km), 2=heartrate (bpm)
-  let intensityType = 0;
-  let intensityValue = 0;      // low bound (pace ms/km or HR bpm)
-  let intensityValueExtend: number | undefined; // high bound
+const RUN_STEP_OVERVIEWS: Record<RunStepType, string> = {
+  warmup: "sid_run_warm_up_dist",
+  active: "sid_run_training",
+  rest: "sid_run_rest_time",
+  cooldown: "sid_run_cool_down_dist",
+  interval: "sid_run_training",
+};
 
-  const tgt = step.targetType ?? "open";
-  if (tgt === "pace" && (step.paceLow != null || step.paceHigh != null)) {
-    intensityType = 1;
-    // COROS stores pace in ms/km (s/km * 1000)
-    // intensityValue = low (faster), intensityValueExtend = high (slower)
-    intensityValue = (step.paceLow ?? step.paceHigh ?? 300) * 1000;
-    if (step.paceHigh != null) {
-      intensityValueExtend = step.paceHigh * 1000;
-    }
-  } else if (tgt === "heartrate" && (step.hrLow != null || step.hrHigh != null)) {
-    intensityType = 2;
-    intensityValue = step.hrLow ?? step.hrHigh ?? 0;
-    if (step.hrHigh != null) {
-      intensityValueExtend = step.hrHigh;
-    }
-  }
+// Template originIds from COROS exercise catalog (US region)
+const RUN_STEP_ORIGIN_IDS: Record<RunStepType, string> = {
+  warmup: "425895398452936705",
+  active: "426109589008859136",
+  rest: "425895332954685440",
+  cooldown: "425895456971866112",
+  interval: "426109589008859136",
+};
 
-  const base: Record<string, unknown> = {
-    name: RUN_STEP_NAMES[step.type],
-    exerciseType: RUN_EXERCISE_TYPE[step.type],
-    sets: 1,
-    targetType: RUN_DURATION_TYPE[step.durationType],
-    targetValue: step.durationType === "open" ? 0 : step.durationValue,
-    intensityType,
-    intensityValue,
-    restValue: 0,
-    sortNo: (index + 1) * 16777216,
-    defaultOrder: 0,
-    groupId: "0",
-    isGroup: false,
-    isDefaultAdd: 0,
+// sortNo spacing: top-level blocks use multiples of 16M (0x1000000)
+// children inside a group use blockSortNo + childIndex * 64K (0x10000)
+const BLOCK_SPACING = 16777216;
+const CHILD_SPACING = 65536;
+
+/**
+ * Maps a pace % to COROS training zone (intensityCustom field).
+ * Confirmed from native workouts: 79-86%→1, 93-97%→3, 103-112%→5
+ */
+function getIntensityZone(lowPct: number): number {
+  if (lowPct >= 103) return 5;  // VO2max
+  if (lowPct >= 98) return 4;   // Threshold
+  if (lowPct >= 92) return 3;   // Tempo
+  if (lowPct >= 87) return 2;   // Aerobic
+  return 1;                      // Easy
+}
+
+/**
+ * Builds intensity fields for a running step.
+ *
+ * isInGroup: when true (child of a group container), pace values are in ms/km
+ * with intensityMultiplier=1000. When false (regular top-level step), pace values
+ * are in s/km with intensityMultiplier=0. This matches native COROS data exactly.
+ *
+ * intensityType:
+ *   0 = open (no target)
+ *   1 = absolute pace → shows pace on watch, no zone label
+ *   2 = heartrate (bpm or % of LTHR)
+ *   3 = % of LTSP pace → shows zone label in COROS app
+ */
+function buildRunIntensity(
+  step: RunStep,
+  ltspMs: number | null,
+  isInGroup = false
+): {
+  intensityType: number;
+  intensityValue: number;
+  intensityValueExtend: number;
+  intensityPercent: number;
+  intensityPercentExtend: number;
+  intensityMultiplier: number;
+  intensityDisplayUnit: number;
+  intensityCustom: number;
+  hrType: number;
+  isIntensityPercent: boolean;
+} {
+  const base = {
+    intensityType: 0,
+    intensityValue: 0,
+    intensityValueExtend: 0,
+    intensityPercent: 0,
+    intensityPercentExtend: 0,
+    intensityMultiplier: 0,
+    intensityDisplayUnit: 0,
+    intensityCustom: 0,
+    hrType: 0,
     isIntensityPercent: false,
-    sportType: 1,
-    status: 1,
-    videoInfos: [],
   };
 
-  if (intensityValueExtend != null) {
-    base.intensityValueExtend = intensityValueExtend;
+  const tgt = step.targetType ?? "open";
+
+  if (tgt === "pace") {
+    // Percentage-based pace (intensityType=3): shows zone label in COROS app
+    if ((step.paceLowPercent != null || step.paceHighPercent != null) && ltspMs != null) {
+      const lowPct = step.paceLowPercent ?? step.paceHighPercent ?? 80;
+      const highPct = step.paceHighPercent ?? step.paceLowPercent ?? 80;
+
+      // In COROS: higher % = faster pace = smaller s/km value
+      // intensityValue  = faster end = LTSP / (highPct/100)  [e.g. 86% → 280 s/km]
+      // intensityValueExtend = slower end = LTSP / (lowPct/100) [e.g. 79% → 305 s/km]
+      const fasterMs = Math.round(ltspMs / (highPct / 100));
+      const slowerMs = Math.round(ltspMs / (lowPct / 100));
+
+      // Native COROS: group children use ms/km (multiplier=1000),
+      // regular top-level steps use s/km (multiplier=0)
+      const multiplier = isInGroup ? 1000 : 0;
+      const faster = isInGroup ? fasterMs : Math.round(fasterMs / 1000);
+      const slower = isInGroup ? slowerMs : Math.round(slowerMs / 1000);
+
+      return {
+        ...base,
+        intensityType: 3,
+        intensityValue: faster,
+        intensityValueExtend: slower,
+        intensityPercent: lowPct * 1000,
+        intensityPercentExtend: highPct * 1000,
+        intensityMultiplier: multiplier,
+        intensityDisplayUnit: 1, // min/km
+        intensityCustom: getIntensityZone(lowPct),
+        isIntensityPercent: true,
+      };
+    }
+    // Absolute pace (intensityType=1): always in ms/km with multiplier=1000
+    if (step.paceLow != null || step.paceHigh != null) {
+      const fasterMs = (step.paceLow ?? step.paceHigh ?? 300) * 1000;
+      const slowerMs = (step.paceHigh ?? step.paceLow ?? 300) * 1000;
+      return {
+        ...base,
+        intensityType: 1,
+        intensityValue: fasterMs,
+        intensityValueExtend: slowerMs,
+        intensityMultiplier: 1000,
+        intensityDisplayUnit: 1,
+      };
+    }
+  } else if (tgt === "heartrate") {
+    if (step.hrLowPercent != null || step.hrHighPercent != null) {
+      const lowPct = step.hrLowPercent ?? step.hrHighPercent ?? 80;
+      const highPct = step.hrHighPercent ?? step.hrLowPercent ?? 80;
+      return {
+        ...base,
+        intensityType: 2,
+        intensityValue: 0,
+        intensityValueExtend: 0,
+        intensityPercent: lowPct * 1000,
+        intensityPercentExtend: highPct * 1000,
+        intensityCustom: 2,
+        hrType: 3,
+        isIntensityPercent: true,
+      };
+    }
+    if (step.hrLow != null || step.hrHigh != null) {
+      return {
+        ...base,
+        intensityType: 2,
+        intensityValue: step.hrLow ?? step.hrHigh ?? 0,
+        intensityValueExtend: step.hrHigh ?? step.hrLow ?? 0,
+        hrType: 0,
+      };
+    }
   }
 
   return base;
 }
 
+function buildRunStep(
+  step: RunStep,
+  sortNo: number,
+  groupId: string,
+  ltspMs: number | null,
+  isInGroup = false
+): Record<string, unknown> {
+  const intensity = buildRunIntensity(step, ltspMs, isInGroup);
+
+  let targetValue: number;
+  if (step.durationType === "open") {
+    targetValue = 0;
+  } else if (step.durationType === "distance") {
+    targetValue = step.durationValue * 100; // meters → centimeters
+  } else {
+    targetValue = step.durationValue;
+  }
+
+  const isDistance = step.durationType === "distance";
+
+  return {
+    id: String(sortNo),
+    name: RUN_STEP_NAMES[step.type],
+    overview: RUN_STEP_OVERVIEWS[step.type],
+    originId: RUN_STEP_ORIGIN_IDS[step.type],
+    exerciseType: RUN_EXERCISE_TYPE[step.type],
+    sets: 1,
+    targetType: RUN_DURATION_TYPE[step.durationType],
+    targetValue,
+    targetDisplayUnit: isDistance ? 1 : 0,
+    ...intensity,
+    restValue: 0,
+    restType: 3, // 3=none
+    sortNo,
+    defaultOrder: 0,
+    groupId,
+    isGroup: false,
+    isDefaultAdd: 0,
+    sportType: 1,
+    status: 1,
+    videoInfos: [],
+  };
+}
+
 function buildRunningPayload(
   name: string,
   overview: string,
-  steps: RunStep[]
+  steps: RunStep[],
+  ltspSeconds?: number
 ): object {
-  // Expand repeats
-  const expanded: RunStep[] = [];
+  const ltspMs = ltspSeconds != null ? ltspSeconds * 1000 : null;
+
+  const exercises: Record<string, unknown>[] = [];
+  let blockIndex = 0;
+
   for (const step of steps) {
-    const times = step.repeat ?? 1;
-    for (let i = 0; i < times; i++) expanded.push(step);
+    const repeat = step.repeat ?? 1;
+    const restSec = step.repeatRestSeconds ?? 0;
+    blockIndex++;
+    const blockSortNo = blockIndex * BLOCK_SPACING;
+
+    if (repeat > 1) {
+      // Native COROS group structure: container (exerciseType=0) + child steps
+      // Container id is used as groupId by children — server resolves relationship on save
+      const containerId = String(blockSortNo);
+
+      // Container targetValue = total duration/distance of ONE iteration
+      let containerTargetType: number;
+      let containerTargetValue: number;
+      if (step.durationType === "distance") {
+        containerTargetType = 5; // distance in cm
+        // Include recovery distance only if it makes sense (e.g., fixed distance recovery)
+        // For simplicity, use just the interval distance as container target
+        containerTargetValue = step.durationValue * 100;
+      } else {
+        containerTargetType = 2; // time in seconds
+        containerTargetValue = step.durationValue + restSec;
+      }
+
+      // Group container — exerciseType=0, sportType=0 (confirmed from native COROS workouts)
+      exercises.push({
+        id: containerId,
+        name: "",
+        overview: "",
+        exerciseType: 0,
+        isGroup: true,
+        sets: repeat,
+        groupId: "0",
+        sortNo: blockSortNo,
+        targetType: containerTargetType,
+        targetValue: containerTargetValue,
+        targetDisplayUnit: 0,
+        intensityType: 0,
+        intensityValue: 0,
+        intensityValueExtend: 0,
+        intensityPercent: 0,
+        intensityPercentExtend: 0,
+        intensityMultiplier: 0,
+        intensityDisplayUnit: 0,
+        intensityCustom: 0,
+        hrType: 0,
+        isIntensityPercent: false,
+        restValue: 0,
+        restType: 0,
+        defaultOrder: 0,
+        isDefaultAdd: 0,
+        sportType: 0,  // container is sportType=0 (confirmed)
+        status: 1,
+        videoInfos: [],
+      });
+
+      // Child 1: the interval step (intensity in ms/km units since isInGroup=true)
+      exercises.push(buildRunStep(step, blockSortNo + CHILD_SPACING, containerId, ltspMs, true));
+
+      // Child 2: recovery jog (if rest specified and time-based)
+      if (restSec > 0 && step.durationType !== "distance") {
+        exercises.push({
+          id: String(blockSortNo + CHILD_SPACING * 2),
+          name: "T3001",
+          overview: "sid_run_rest_time",
+          originId: "425895332954685440",
+          exerciseType: 2,
+          isGroup: false,
+          sets: 1,
+          groupId: containerId,
+          sortNo: blockSortNo + CHILD_SPACING * 2,
+          targetType: 2,        // time
+          targetValue: restSec,
+          targetDisplayUnit: 0,
+          intensityType: 0,
+          intensityValue: 0,
+          intensityValueExtend: 0,
+          intensityPercent: 0,
+          intensityPercentExtend: 0,
+          intensityMultiplier: 0,
+          intensityDisplayUnit: 0,
+          intensityCustom: 0,
+          hrType: 0,
+          isIntensityPercent: false,
+          restValue: 0,
+          restType: 3,
+          defaultOrder: 0,
+          isDefaultAdd: 0,
+          sportType: 1,
+          status: 1,
+          videoInfos: [],
+        });
+      }
+    } else {
+      // Single step (no repeat) — regular step outside any group
+      exercises.push(buildRunStep(step, blockSortNo, "0", ltspMs, false));
+    }
   }
 
-  const exercises = expanded.map((step, i) => buildRunStep(step, i));
-  const totalDurationSec = expanded.reduce((sum, step) => {
-    if (step.durationType === "time") return sum + step.durationValue;
-    // Estimate from pace for distance steps
+  // Estimate total duration
+  const totalDurationSec = steps.reduce((sum, step) => {
+    const repeat = step.repeat ?? 1;
+    if (step.durationType === "time") return sum + step.durationValue * repeat;
     const paceSkm = step.paceLow ?? step.paceHigh ?? 300;
-    return sum + Math.round((step.durationValue / 1000) * paceSkm);
+    return sum + Math.round((step.durationValue / 1000) * paceSkm) * repeat;
   }, 0);
 
   return {
@@ -721,9 +981,40 @@ export async function createRunningWorkout(
   auth: AuthData,
   name: string,
   overview: string,
-  steps: RunStep[]
-): Promise<{ duration: number; totalSteps: number }> {
-  const payload = buildRunningPayload(name, overview, steps);
+  steps: RunStep[],
+  ltspSecondsOverride?: number
+): Promise<{ duration: number; totalSteps: number; ltspUsed?: number }> {
+  const needsLtsp = steps.some(
+    (s) => s.paceLowPercent != null || s.paceHighPercent != null
+  );
+
+  // Priority: explicit arg > env var > COROS profile
+  let ltspSeconds: number | undefined = ltspSecondsOverride;
+  if (!ltspSeconds && process.env.COROS_LTSP) {
+    const parsed = parseInt(process.env.COROS_LTSP, 10);
+    if (!isNaN(parsed) && parsed > 0) ltspSeconds = parsed;
+  }
+
+  if (needsLtsp && !ltspSeconds) {
+    // Try to fetch LTSP from user's analytics profile
+    try {
+      const metrics = await queryAnalytics(auth);
+      if (metrics.today.ltsp) ltspSeconds = metrics.today.ltsp;
+    } catch {
+      // Will throw below if still missing
+    }
+
+    if (!ltspSeconds) {
+      throw new Error(
+        "Pace % requer o LTSP (pace de limiar). Configure-o de uma das formas:\n" +
+        "1. Variável de ambiente COROS_LTSP no mcp.json (ex: \"241\" para 4:01/km)\n" +
+        "2. Parâmetro 'ltspSeconds' no tool (ex: 241)\n" +
+        "3. No app COROS: Perfil → Dados Fisiológicos → Pace de Limiar Anaeróbico"
+      );
+    }
+  }
+
+  const payload = buildRunningPayload(name, overview, steps, ltspSeconds);
 
   // Calculate
   const calcResult = (await apiPost(auth, "/training/program/calculate", payload)) as {
@@ -745,6 +1036,7 @@ export async function createRunningWorkout(
   return {
     duration: addPayload.duration as number,
     totalSteps: calcResult.data.planSets,
+    ltspUsed: ltspSeconds,
   };
 }
 
@@ -767,6 +1059,13 @@ export async function queryWorkouts(
     sportType: options.sportType ?? 0,
   };
   return apiPost(auth, "/training/program/query", body);
+}
+
+export async function queryWorkoutDetail(
+  auth: AuthData,
+  workoutId: string
+): Promise<unknown> {
+  return apiPost(auth, "/training/program/detail/query", { id: workoutId });
 }
 
 // --- Activities ---

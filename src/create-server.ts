@@ -416,48 +416,101 @@ export function createCorosServer(): McpServer {
               ? `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.exerciseNum || 0} etapas${dateStr})`
               : `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.totalSets || 0} sets | ${w.exerciseNum || 0} exercises${dateStr})`;
 
+            // Build a map of groupId → sets for group containers (exerciseType=0)
+            const groupSetsMap: Record<string, number> = {};
+            if (isRunning) {
+              for (const ex of (w.exercises || [])) {
+                const rawEx2 = ex as Record<string, unknown>;
+                if ((rawEx2.exerciseType as number) === 0 && (rawEx2.isGroup as boolean)) {
+                  const gid = rawEx2.id as string;
+                  const gsets = rawEx2.sets as number;
+                  if (gid) groupSetsMap[gid] = gsets;
+                }
+              }
+            }
+
             const steps = (w.exercises || [])
               .map((ex) => {
                 if (isRunning) {
-                  // exerciseType: 0=aquecimento,1=treino,2=rest,3=desaquecimento,4=intervalo
-                  const STEP_NAMES: Record<number, string> = {
-                    0: "🔥 Aquecimento",
-                    1: "🏃 Treino",
-                    2: "⏸ Rest",
-                    3: "❄️ Desaquecimento",
-                    4: "⚡ Intervalo",
+                  const rawEx = ex as Record<string, unknown>;
+
+                  // Skip group containers (exerciseType=0) — they're structural, shown via children
+                  if ((rawEx.exerciseType as number) === 0 && (rawEx.isGroup as boolean)) {
+                    return null;
+                  }
+
+                  // T-code display names
+                  const TCODE_NAMES: Record<string, string> = {
+                    T1120: "🔥 Aquecimento",
+                    T1122: "❄️ Desaquecimento",
+                    T3001: "🏃 Treino",
                   };
-                  const stepName = STEP_NAMES[(ex.exerciseType as number)] ?? `Tipo ${ex.exerciseType}`;
-                  // targetType: 0=aberto,1=carga,2=tempo(s),3=distância(m)
-                  const targetType = ex.targetType as number;
-                  const targetVal = ex.targetValue as number;
+                  const EXTYPE_NAMES: Record<number, string> = {
+                    1: "🔥 Aquecimento",
+                    2: "🏃 Treino",
+                    3: "❄️ Desaquecimento",
+                    4: "⏸ Rest",
+                  };
+                  const storedName = rawEx.name as string | undefined;
+                  const stepName = (storedName && TCODE_NAMES[storedName])
+                    ?? EXTYPE_NAMES[(rawEx.exerciseType as number)]
+                    ?? storedName
+                    ?? `Tipo ${rawEx.exerciseType}`;
+
+                  // Check if this step is a child of a group → prefix with Nx
+                  const childGroupId = rawEx.groupId as string | undefined;
+                  const parentSets = childGroupId && childGroupId !== "0" ? groupSetsMap[childGroupId] : undefined;
+                  const setsStr = parentSets && parentSets > 1 ? `${parentSets}× ` : "";
+
+                  // Duration display
+                  const targetType = rawEx.targetType as number;
+                  const targetVal = rawEx.targetValue as number;
                   let dur: string;
                   if (targetType === 0) dur = "aberto";
-                  else if (targetType === 2) dur = `${Math.round(targetVal / 60)}min`;
-                  else if (targetType === 3) dur = `${(targetVal / 1000).toFixed(1)}km`;
-                  else dur = `${targetVal} (carga)`;
-                  // intensityType: 0=aberto,1=ritmo(ms/km),2=FC(bpm)
-                  const intensityType = ex.intensityType as number;
-                  const intensityLow = ex.intensityValue as number;
-                  const intensityHigh = (ex as Record<string, unknown>).intensityValueExtend as number | undefined;
-                  let target = "";
-                  if (intensityType === 1 && intensityLow > 0) {
-                    // pace stored in ms/km → convert to s/km
-                    const low = fmtPace(Math.round(intensityLow / 1000));
-                    if (intensityHigh != null && intensityHigh > 0) {
-                      const high = fmtPace(Math.round(intensityHigh / 1000));
-                      target = ` @ ${low}-${high}/km`;
-                    } else {
-                      target = ` @ ${low}/km`;
-                    }
-                  } else if (intensityType === 2 && intensityLow > 0) {
-                    if (intensityHigh != null && intensityHigh > 0) {
-                      target = ` @ ${intensityLow}-${intensityHigh}bpm`;
-                    } else {
-                      target = ` @ ${intensityLow}bpm`;
-                    }
+                  else if (targetType === 2) {
+                    dur = targetVal >= 60
+                      ? `${Math.floor(targetVal / 60)}min${targetVal % 60 > 0 ? `${targetVal % 60}s` : ""}`
+                      : `${targetVal}s`;
                   }
-                  return `    • ${stepName}: ${dur}${target}`;
+                  else if (targetType === 5) dur = `${(targetVal / 100000).toFixed(1)}km`;
+                  else dur = `${targetVal} (carga)`;
+
+                  // Intensity display
+                  const intensityType = rawEx.intensityType as number;
+                  const multiplier = (rawEx.intensityMultiplier as number) || 0;
+                  const rawLow = rawEx.intensityValue as number;
+                  const rawHigh = rawEx.intensityValueExtend as number | undefined;
+                  // Normalize to s/km regardless of multiplier
+                  const intensityLow = multiplier > 0 ? Math.round(rawLow / multiplier) : rawLow;
+                  const intensityHigh = multiplier > 0 && rawHigh != null ? Math.round(rawHigh / multiplier) : rawHigh;
+                  const pctLow = rawEx.intensityPercent as number | undefined;
+                  const pctHigh = rawEx.intensityPercentExtend as number | undefined;
+
+                  let target = "";
+                  if (intensityType === 3 && pctLow != null && pctHigh != null && pctLow > 0) {
+                    const pLow = Math.round(pctLow / 1000);
+                    const pHigh = Math.round(pctHigh / 1000);
+                    // fmtPace already includes "/km", so no extra "/km" suffix needed
+                    const paceStr = intensityLow > 0 && intensityHigh != null && intensityHigh > 0
+                      ? ` (${fmtPace(intensityHigh)}-${fmtPace(intensityLow)})`
+                      : "";
+                    target = ` @ ${pLow}-${pHigh}% LTSP${paceStr}`;
+                  } else if (intensityType === 1 && intensityLow > 0) {
+                    const low = fmtPace(intensityLow);
+                    target = intensityHigh != null && intensityHigh > 0
+                      ? ` @ ${low}-${fmtPace(intensityHigh)}/km`
+                      : ` @ ${low}/km`;
+                  } else if (intensityType === 2 && intensityLow > 0) {
+                    const pctLow2 = rawEx.intensityPercent as number | undefined;
+                    const pctHigh2 = rawEx.intensityPercentExtend as number | undefined;
+                    const hrLow = pctLow2 && pctLow2 > 0 ? `${Math.round(pctLow2 / 1000)}%` : `${intensityLow}bpm`;
+                    const hrHigh = intensityHigh != null && intensityHigh > 0
+                      ? (pctHigh2 && pctHigh2 > 0 ? `-${Math.round(pctHigh2 / 1000)}%` : `-${intensityHigh}bpm`)
+                      : "";
+                    target = ` @ ${hrLow}${hrHigh}`;
+                  }
+
+                  return `    • ${setsStr}${stepName}: ${dur}${target}`;
                 } else {
                   // Strength step
                   const typedEx = ex as { name: string; originId: string; exerciseType: number; sets: number; targetValue: number; targetType: number; intensityValue: number; restValue: number; part: number[] };
@@ -475,6 +528,7 @@ export function createCorosServer(): McpServer {
                   return `    • ${exName}: ${typedEx.sets}x${typedEx.targetValue}${targetUnit}${weight}${rest}${partStr}`;
                 }
               })
+              .filter(Boolean)
               .join("\n");
 
             return `${header}\n${steps}`;
@@ -537,6 +591,32 @@ export function createCorosServer(): McpServer {
       .min(1)
       .optional()
       .describe("Repeat this step N times (useful for intervals). Default: 1"),
+    repeatRestSeconds: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Rest time in seconds between repeat sets (default: 0)"),
+    paceLowPercent: z
+      .number()
+      .int()
+      .optional()
+      .describe("Pace as % of lactate threshold pace — low bound (e.g. 79 = 79%). Shows training zone label in COROS app. Auto-fetches LTSP from your profile."),
+    paceHighPercent: z
+      .number()
+      .int()
+      .optional()
+      .describe("Pace as % of lactate threshold pace — high bound (e.g. 86 = 86%). Shows training zone label in COROS app."),
+    hrLowPercent: z
+      .number()
+      .int()
+      .optional()
+      .describe("Heart rate as % of LTHR — low bound (e.g. 90 = 90%). Use with targetType='heartrate'."),
+    hrHighPercent: z
+      .number()
+      .int()
+      .optional()
+      .describe("Heart rate as % of LTHR — high bound (e.g. 95 = 95%). Use with targetType='heartrate'."),
   });
 
   server.tool(
@@ -546,8 +626,13 @@ export function createCorosServer(): McpServer {
       name: z.string().describe("Workout name (e.g. 'Intervalos 5x1km')"),
       overview: z.string().default("").describe("Workout description"),
       steps: z.array(RunStepSchema).min(1).describe("Array of running steps"),
+      ltspSeconds: z
+        .coerce.number()
+        .int()
+        .optional()
+        .describe("Lactate threshold pace in s/km (e.g. 275 = 4:35/km). Required when using paceLowPercent/paceHighPercent if LTSP is not set in your COROS profile."),
     },
-    async ({ name, overview, steps }) => {
+    async ({ name, overview, steps, ltspSeconds }) => {
       try {
         const auth = await getValidAuth();
         if (!auth) {
@@ -564,12 +649,17 @@ export function createCorosServer(): McpServer {
           targetType: s.targetType as RunTargetType,
           paceLow: s.paceLow,
           paceHigh: s.paceHigh,
+          paceLowPercent: s.paceLowPercent,
+          paceHighPercent: s.paceHighPercent,
           hrLow: s.hrLow,
           hrHigh: s.hrHigh,
+          hrLowPercent: s.hrLowPercent,
+          hrHighPercent: s.hrHighPercent,
           repeat: s.repeat,
+          repeatRestSeconds: s.repeatRestSeconds,
         }));
 
-        const result = await createRunningWorkout(auth, name, overview, runSteps);
+        const result = await createRunningWorkout(auth, name, overview, runSteps, ltspSeconds);
         const durationMin = Math.round(result.duration / 60);
 
         const fmtPaceSummary = (v: number) => `${Math.floor(v / 60)}:${String(v % 60).padStart(2, "0")}`;
@@ -587,15 +677,27 @@ export function createCorosServer(): McpServer {
             else if (s.durationType === "open") dur = "aberto";
             else dur = `${s.durationValue} (carga)`;
             let target = "";
-            if (s.targetType === "pace" && (s.paceLow != null || s.paceHigh != null)) {
-              const low = s.paceLow != null ? fmtPaceSummary(s.paceLow) : null;
-              const high = s.paceHigh != null ? fmtPaceSummary(s.paceHigh) : null;
-              if (low && high) target = ` @ ${low}-${high}/km`;
-              else if (low) target = ` @ ${low}/km`;
-              else if (high) target = ` @ ${high}/km`;
-            } else if (s.targetType === "heartrate" && (s.hrLow != null || s.hrHigh != null)) {
-              if (s.hrLow != null && s.hrHigh != null) target = ` @ ${s.hrLow}-${s.hrHigh}bpm`;
-              else target = ` @ ${s.hrLow ?? s.hrHigh}bpm`;
+            if (s.targetType === "pace") {
+              if (s.paceLowPercent != null || s.paceHighPercent != null) {
+                const lo = s.paceLowPercent, hi = s.paceHighPercent;
+                if (lo != null && hi != null) target = ` @ ${lo}-${hi}% LTSP`;
+                else target = ` @ ${lo ?? hi}% LTSP`;
+              } else if (s.paceLow != null || s.paceHigh != null) {
+                const low = s.paceLow != null ? fmtPaceSummary(s.paceLow) : null;
+                const high = s.paceHigh != null ? fmtPaceSummary(s.paceHigh) : null;
+                if (low && high) target = ` @ ${low}-${high}/km`;
+                else if (low) target = ` @ ${low}/km`;
+                else if (high) target = ` @ ${high}/km`;
+              }
+            } else if (s.targetType === "heartrate") {
+              if (s.hrLowPercent != null || s.hrHighPercent != null) {
+                const lo = s.hrLowPercent, hi = s.hrHighPercent;
+                if (lo != null && hi != null) target = ` @ ${lo}-${hi}% LTHR`;
+                else target = ` @ ${lo ?? hi}% LTHR`;
+              } else if (s.hrLow != null || s.hrHigh != null) {
+                if (s.hrLow != null && s.hrHigh != null) target = ` @ ${s.hrLow}-${s.hrHigh}bpm`;
+                else target = ` @ ${s.hrLow ?? s.hrHigh}bpm`;
+              }
             }
             return `  ${times}${label}: ${dur}${target}`;
           })
@@ -608,6 +710,9 @@ export function createCorosServer(): McpServer {
               text: [
                 `Treino de corrida "${name}" criado com sucesso!`,
                 `Duração total: ~${durationMin} min | ${result.totalSteps} etapas`,
+                result.ltspUsed
+                  ? `LTSP usado: ${Math.floor(result.ltspUsed / 60)}:${String(result.ltspUsed % 60).padStart(2, "0")}/km`
+                  : "",
                 ``,
                 `Etapas:`,
                 stepSummary,
@@ -628,6 +733,22 @@ export function createCorosServer(): McpServer {
           isError: true,
         };
       }
+    }
+  );
+
+  // --- inspect_workout_raw (debug tool) ---
+  server.tool(
+    "inspect_workout_raw",
+    "Returns raw JSON of the first workout matching the name, for debugging exercise structure.",
+    { name: z.string().describe("Workout name to inspect") },
+    async ({ name }) => {
+      const auth = await getValidAuth();
+      if (!auth) return { content: [{ type: "text" as const, text: "Not authenticated." }], isError: true };
+      const result = (await queryWorkouts(auth, { name, sportType: 1, limitSize: 3 })) as { data: unknown[] };
+      const workouts = result.data || [];
+      const match = workouts[0];
+      if (!match) return { content: [{ type: "text" as const, text: `Workout "${name}" not found.` }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify(match, null, 2) }] };
     }
   );
 
