@@ -13,6 +13,7 @@ import {
   queryActivityDetail,
   queryActivityDetailFull,
   queryAnalytics,
+  querySchedule,
   activityModeName,
   fmtDate,
   fmtDuration,
@@ -1050,6 +1051,133 @@ export function createCorosServer(): McpServer {
             {
               type: "text" as const,
               text: `Falha ao listar atividades: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ── list_schedule ─────────────────────────────────────────────────────────
+  server.tool(
+    "list_schedule",
+    "List the COROS training calendar (planned and completed workouts) for a date range. Shows workout name, type, status (completed/pending), duration, distance and training load.",
+    {
+      startDate: z
+        .string()
+        .optional()
+        .describe("Start date in YYYYMMDD format. Defaults to 30 days ago."),
+      endDate: z
+        .string()
+        .optional()
+        .describe("End date in YYYYMMDD format. Defaults to 30 days ahead."),
+    },
+    async ({ startDate, endDate }) => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) throw new Error("Não autenticado. Use authenticate_coros primeiro.");
+
+        // Default: 30 days ago → 30 days ahead
+        const now = new Date();
+        const toYYYYMMDD = (d: Date) =>
+          `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+
+        const past = new Date(now);
+        past.setDate(past.getDate() - 30);
+        const future = new Date(now);
+        future.setDate(future.getDate() + 30);
+
+        const start = startDate ?? toYYYYMMDD(past);
+        const end = endDate ?? toYYYYMMDD(future);
+
+        const { planName, entries } = await querySchedule(start, end, auth);
+
+        const sportName = (t: number) => {
+          if (t === 1 || t === 100) return "🏃 Corrida";
+          if (t === 4 || t === 402) return "💪 Força";
+          if (t === 2 || t === 200) return "🚴 Ciclismo";
+          if (t === 3 || t === 300) return "🏊 Natação";
+          return `Sport(${t})`;
+        };
+
+        const statusIcon = (s: number) => {
+          if (s === 2) return "✅";
+          if (s === 1) return "⚡";
+          return "📋";
+        };
+
+        const fmtDay = (d: number) => {
+          const s = String(d);
+          return `${s.slice(6, 8)}/${s.slice(4, 6)}/${s.slice(0, 4)}`;
+        };
+
+        // Group by week
+        const weeks: Map<string, typeof entries> = new Map();
+        for (const e of entries) {
+          const date = new Date(
+            Number(String(e.happenDay).slice(0, 4)),
+            Number(String(e.happenDay).slice(4, 6)) - 1,
+            Number(String(e.happenDay).slice(6, 8))
+          );
+          // Monday of the week
+          const day = date.getDay();
+          const monday = new Date(date);
+          monday.setDate(date.getDate() - ((day + 6) % 7));
+          const weekKey = toYYYYMMDD(monday);
+          if (!weeks.has(weekKey)) weeks.set(weekKey, []);
+          weeks.get(weekKey)!.push(e);
+        }
+
+        const lines: string[] = [];
+        lines.push(`📅 **Calendário — ${planName}**`);
+        lines.push(`📆 Período: ${fmtDay(Number(start))} → ${fmtDay(Number(end))}`);
+        lines.push("");
+
+        for (const [weekKey, weekEntries] of weeks) {
+          const wk = new Date(
+            Number(weekKey.slice(0, 4)),
+            Number(weekKey.slice(4, 6)) - 1,
+            Number(weekKey.slice(6, 8))
+          );
+          const sunday = new Date(wk);
+          sunday.setDate(wk.getDate() + 6);
+          lines.push(`━━━ Semana ${fmtDay(Number(toYYYYMMDD(wk)))} → ${fmtDay(Number(toYYYYMMDD(sunday)))} ━━━`);
+
+          for (const e of weekEntries) {
+            const icon = statusIcon(e.executeStatus);
+            const sport = sportName(e.sportType);
+            const name = e.name || "(sem nome)";
+            const dur = e.duration > 0 ? fmtDuration(e.duration) : "";
+            const dist =
+              e.distance > 0
+                ? `${(e.distance / 100000).toFixed(1)}km`
+                : "";
+            const load = e.trainingLoad ? `TL:${e.trainingLoad}` : "";
+            const labelNote = e.labelId ? ` · ID:${e.labelId}` : "";
+
+            const parts = [dur, dist, load].filter(Boolean).join(" · ");
+            lines.push(
+              `  ${icon} ${fmtDay(e.happenDay)} | ${sport} | ${name}${parts ? ` · ${parts}` : ""}${labelNote}`
+            );
+          }
+          lines.push("");
+        }
+
+        // Summary stats
+        const completed = entries.filter((e) => e.executeStatus === 2);
+        const pending = entries.filter((e) => e.executeStatus === 0);
+        lines.push(`📊 Total: ${entries.length} treinos · ✅ ${completed.length} concluídos · 📋 ${pending.length} pendentes`);
+
+        return {
+          content: [{ type: "text" as const, text: lines.join("\n") }],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Falha ao buscar calendário: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
           isError: true,

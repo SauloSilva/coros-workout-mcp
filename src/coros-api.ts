@@ -1270,3 +1270,89 @@ export async function queryAnalytics(
     timeAreaList: d.summaryInfo?.timeAreaList ?? [],
   };
 }
+
+// ─── Schedule (Calendar) ────────────────────────────────────────────────────
+
+export interface ScheduleEntry {
+  happenDay: number;       // YYYYMMDD
+  executeStatus: number;   // 0=pending, 2=completed
+  name: string;
+  sportType: number;
+  duration: number;        // seconds
+  distance: number;        // cm (divide by 100 = meters)
+  labelId?: string;        // present when completed (links to recorded activity)
+  trainingLoad?: number;
+  planName?: string;
+}
+
+export interface ScheduleResult {
+  planName: string;
+  entries: ScheduleEntry[];
+}
+
+export async function querySchedule(
+  startDate: string,  // YYYYMMDD
+  endDate: string,    // YYYYMMDD
+  auth: { accessToken: string; userId: string; region: string }
+): Promise<ScheduleResult> {
+  const base = auth.region === "us" ? "teamapi.coros.com" : "teameuapi.coros.com";
+  const headers = {
+    "Content-Type": "application/json",
+    accesstoken: auth.accessToken,
+    yfheader: JSON.stringify({ userId: auth.userId }),
+  };
+
+  const res = await fetch(
+    `https://${base}/training/schedule/query?startDate=${startDate}&endDate=${endDate}&supportRestExercise=1`,
+    { method: "GET", headers }
+  );
+  const data = await res.json();
+
+  if (data.result !== "0000") {
+    throw new Error(`COROS API error (/training/schedule/query): ${data.message || data.result}`);
+  }
+
+  const d = data.data;
+  const planName: string = d.name ?? "Plano de Treino";
+
+  // Build program lookup by idInPlan
+  const progMap: Record<string, { name: string; sportType: number; duration: number; distance: number }> = {};
+  for (const p of (d.programs ?? [])) {
+    if (p.idInPlan != null) {
+      progMap[String(p.idInPlan)] = {
+        name: p.name ?? "",
+        sportType: p.sportType ?? 0,
+        duration: p.duration ?? p.estimatedTime ?? 0,
+        distance: p.distance ?? p.estimatedDistance ?? 0,
+      };
+    }
+  }
+
+  const entries: ScheduleEntry[] = [];
+  for (const e of (d.entities ?? [])) {
+    // Completed workouts have sportData with actual stats
+    const sd = e.sportData;
+    // Future workouts: look up the program definition
+    const prog = progMap[String(e.idInPlan)];
+
+    const name: string = sd?.name ?? prog?.name ?? "";
+    const sportType: number = sd?.sportType ?? prog?.sportType ?? 0;
+    const duration: number = sd?.duration ?? prog?.duration ?? 0;
+    const distance: number = sd?.distance ?? prog?.distance ?? 0;
+    const labelId: string | undefined = sd?.labelId ?? undefined;
+    const trainingLoad: number | undefined = sd?.trainingLoad ?? undefined;
+
+    entries.push({
+      happenDay: e.happenDay,
+      executeStatus: e.executeStatus ?? 0,
+      name,
+      sportType,
+      duration,
+      distance,
+      labelId,
+      trainingLoad,
+    });
+  }
+
+  return { planName, entries };
+}
