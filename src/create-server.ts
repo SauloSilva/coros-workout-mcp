@@ -14,6 +14,7 @@ import {
   queryActivityDetailFull,
   queryAnalytics,
   querySchedule,
+  queryScheduleRaw,
   scheduleWorkout,
   activityModeName,
   fmtDate,
@@ -1349,6 +1350,26 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
           isError: true,
         };
       }
+    }
+  );
+
+  // ── inspect_schedule_raw ─────────────────────────────────────────────────
+  server.tool(
+    "inspect_schedule_raw",
+    "Returns raw JSON of the schedule API response for debugging. Shows entities, programs, idInPlan values and full structure.",
+    {
+      startDate: z.string().describe("Start date YYYYMMDD"),
+      endDate: z.string().describe("End date YYYYMMDD"),
+    },
+    async ({ startDate, endDate }) => {
+      const auth = await getValidAuth();
+      if (!auth) {
+        return { content: [{ type: "text" as const, text: "Not authenticated." }], isError: true };
+      }
+      const raw = await queryScheduleRaw(startDate, endDate, auth);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(raw, null, 2) }],
+      };
     }
   );
 

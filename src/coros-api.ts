@@ -1589,35 +1589,144 @@ export interface ScheduleResult {
   entries: ScheduleEntry[];
 }
 
+// Region code for CPL-coros-region cookie (EU=3, US=1)
+function regionCode(region: string): number {
+  return region === "us" ? 1 : 3;
+}
+
+/** Browser-like headers that mimic COROS Training Hub requests (required for write ops on schedule) */
+function browserHeaders(auth: AuthData): Record<string, string> {
+  const origin = auth.region === "us"
+    ? "https://training.coros.com"
+    : "https://trainingeu.coros.com";
+  return {
+    "Content-Type": "application/json",
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+    accesstoken: auth.accessToken,
+    yfheader: JSON.stringify({ userId: auth.userId }),
+    Cookie: `CPL-coros-token=${auth.accessToken}; CPL-coros-region=${regionCode(auth.region)}`,
+    origin,
+    referer: `${origin}/`,
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    "sec-fetch-site": "same-site",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-dest": "empty",
+  };
+}
+
 export async function scheduleWorkout(
   auth: AuthData,
   workoutId: string,
   date: string // YYYYMMDD
 ): Promise<void> {
-  const detailRes = (await apiPost(auth, "/training/program/detail/query", { id: workoutId })) as {
-    data: Record<string, unknown>;
-  };
-  const program = detailRes.data;
+  const apiUrl = REGION_URLS[auth.region];
 
-  if (!program || !program.id) {
-    throw new Error(`Workout not found: ${workoutId}`);
+  // Step 1: fetch the full program detail via GET /training/program/detail
+  // (matches the web app's fetchProgramDetail: GET /training/program/detail?id=...&supportRestExercise=1)
+  const detailRes = await fetch(
+    `${apiUrl}/training/program/detail?id=${workoutId}&supportRestExercise=1`,
+    { method: "GET", headers: apiHeaders(auth) }
+  );
+  const detailData = await detailRes.json() as { result: string; message?: string; data?: Record<string, unknown> };
+  if (detailData.result !== "0000") {
+    if (AUTH_ERROR_CODES.has(detailData.result)) {
+      throw new Error(`COROS auth error (/training/program/detail): token invalid or expired. Use authenticate_coros to re-login.`);
+    }
+    throw new Error(`COROS API error (/training/program/detail): ${detailData.message || detailData.result} — make sure the workout ID is valid (use list_workouts to get IDs).`);
+  }
+  const program = detailData.data as Record<string, unknown>;
+
+  // Step 2: query the current schedule to get maxIdInPlan
+  const now = new Date();
+  const past = new Date(now); past.setDate(now.getDate() - 90);
+  const future = new Date(now); future.setDate(now.getDate() + 90);
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+
+  const schedRes = await fetch(
+    `${apiUrl}/training/schedule/query?startDate=${fmt(past)}&endDate=${fmt(future)}&supportRestExercise=1`,
+    { method: "GET", headers: apiHeaders(auth) }
+  );
+  const schedData = await schedRes.json() as {
+    result: string;
+    data?: {
+      entities?: Array<{ happenDay: number; idInPlan: string | number; sortNoInSchedule: number }>;
+      programs?: Array<{ idInPlan: string | number }>;
+      maxIdInPlan?: number;
+    };
+  };
+
+  const entities = schedData.data?.entities ?? [];
+  const programsInPlan = schedData.data?.programs ?? [];
+
+  // Use server-provided maxIdInPlan if available, otherwise compute from data
+  let maxIdInPlan = schedData.data?.maxIdInPlan ?? 0;
+  if (!maxIdInPlan) {
+    for (const e of entities) {
+      const v = Number(e.idInPlan);
+      if (v > maxIdInPlan) maxIdInPlan = v;
+    }
+    for (const p of programsInPlan) {
+      const v = Number(p.idInPlan);
+      if (v > maxIdInPlan) maxIdInPlan = v;
+    }
   }
 
-  // Use a unique idInPlan derived from current timestamp (fits in safe integer range)
-  const idInPlan = Math.floor(Date.now() / 1000) % 999983;
+  const idInPlan = maxIdInPlan + 1;
+
+  // Count existing entries on the target date to determine sortNoInSchedule
+  const targetDay = Number(date);
+  const existingOnDate = entities.filter((e) => Number(e.happenDay) === targetDay);
+  const sortNoInSchedule = existingOnDate.length > 0
+    ? Math.max(...existingOnDate.map((e) => Number(e.sortNoInSchedule))) + 1
+    : 1;
+
+  // Step 3: build the schedule update payload
+  // Exact format from COROS Training Hub source (addProgram function):
+  //   entities: [{ happenDay, idInPlan, sortNoInSchedule }]
+  //   programs: [<full program with idInPlan set>]
+  //   versionObjects: [{ id: idInPlan, status: 1 }]  ← required, was missing before
+  //   pbVersion: 2  ← required, was missing before
+  const schedProgram = { ...program, idInPlan };
 
   const payload = {
-    entities: [
-      {
-        happenDay: date,
-        idInPlan,
-        sortNoInSchedule: 0,
-      },
-    ],
-    programs: [{ ...program, idInPlan }],
+    entities: [{ happenDay: Number(date), idInPlan, sortNoInSchedule }],
+    programs: [schedProgram],
+    versionObjects: [{ id: idInPlan, status: 1 }],
+    pbVersion: 2,
   };
 
-  await apiPost(auth, "/training/schedule/update", payload);
+  const updateRes = await fetch(`${apiUrl}/training/schedule/update`, {
+    method: "POST",
+    headers: apiHeaders(auth),
+    body: JSON.stringify(payload),
+  });
+  const updateData = await updateRes.json() as { result: string; message?: string };
+  if (updateData.result !== "0000") {
+    if (AUTH_ERROR_CODES.has(updateData.result)) {
+      throw new Error(`COROS auth error (/training/schedule/update): token invalid or expired. Use authenticate_coros to re-login.`);
+    }
+    throw new Error(`COROS API error (/training/schedule/update): ${updateData.message || updateData.result}`);
+  }
+}
+
+export async function queryScheduleRaw(
+  startDate: string,
+  endDate: string,
+  auth: { accessToken: string; userId: string; region: string }
+): Promise<unknown> {
+  const base = auth.region === "us" ? "teamapi.coros.com" : "teameuapi.coros.com";
+  const headers = {
+    "Content-Type": "application/json",
+    accesstoken: auth.accessToken,
+    yfheader: JSON.stringify({ userId: auth.userId }),
+  };
+  const res = await fetch(
+    `https://${base}/training/schedule/query?startDate=${startDate}&endDate=${endDate}&supportRestExercise=1`,
+    { method: "GET", headers }
+  );
+  return res.json();
 }
 
 export async function querySchedule(
