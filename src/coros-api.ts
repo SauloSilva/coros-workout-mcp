@@ -783,6 +783,7 @@ export interface ActivityQueryOptions {
 }
 
 export interface Activity {
+  labelId: string;
   name: string;
   /** YYYYMMDD integer – use startTime for a real Unix timestamp */
   date: number;
@@ -795,13 +796,29 @@ export interface Activity {
   distance: number;
   /** Duration in seconds */
   totalTime: number;
+  workoutTime: number;
   /** Calories × 1000 (divide by 1000 for kcal) */
   calorie: number;
   avgHr: number;
+  /** Average pace in s/km */
   avgSpeed: number;
+  /** Adjusted/GAP pace in s/km */
+  adjustedPace: number;
+  /** Best pace (fastest point) in s/km */
+  best: number;
+  /** Best 1km pace in s/km */
+  bestKm: number;
+  /** Average cadence in spm */
+  avgCadence: number;
+  /** Average power in watts */
+  avgPower: number;
   ascent: number;
+  descent: number;
   trainingLoad: number;
+  step: number;
   device: string;
+  deviceId: string;
+  imageUrl: string;
 }
 
 const ACTIVITY_MODE_NAMES: Record<number, string> = {
@@ -898,6 +915,33 @@ export async function queryActivities(
     activities: data.data?.dataList ?? [],
     total: data.data?.count ?? 0,
   };
+}
+
+/** Search through recent activities to find one by labelId. */
+export async function queryActivityDetail(
+  auth: AuthData,
+  labelId: string
+): Promise<Activity | null> {
+  // Search up to 365 days back, paginating up to 10 pages of 50
+  for (let page = 1; page <= 10; page++) {
+    const { activities } = await queryActivities(auth, {
+      days: 365,
+      size: 50,
+      pageNumber: page,
+    });
+    if (activities.length === 0) break;
+    const found = activities.find((a) => String(a.labelId) === String(labelId));
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Format pace (s/km) → "M:SS/km" */
+export function fmtPace(secPerKm: number): string {
+  if (!secPerKm || secPerKm <= 0) return "–";
+  const m = Math.floor(secPerKm / 60);
+  const s = Math.round(secPerKm % 60);
+  return `${m}:${String(s).padStart(2, "0")}/km`;
 }
 
 export { fmtDate, fmtDuration, activityModeName as fmtMode };

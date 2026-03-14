@@ -10,9 +10,11 @@ import {
   addWorkout,
   queryWorkouts,
   queryActivities,
+  queryActivityDetail,
   activityModeName,
   fmtDate,
   fmtDuration,
+  fmtPace,
   queryExerciseCatalog,
   fetchI18nStrings,
   buildCatalogFromRaw,
@@ -622,6 +624,121 @@ export function createCorosServer(): McpServer {
     }
   );
 
+  // --- get_activity_details ---
+  server.tool(
+    "get_activity_details",
+    "Get detailed metrics for a specific COROS activity by its ID (labelId). Use list_activities first to get the labelId.",
+    {
+      labelId: z.string().describe("Activity ID (labelId) from list_activities"),
+    },
+    async ({ labelId }) => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) throw new Error("Not authenticated. Please login first.");
+
+        const act = await queryActivityDetail(auth, labelId);
+        if (!act) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Atividade com ID ${labelId} não encontrada.`,
+              },
+            ],
+          };
+        }
+
+        const sport = activityModeName(act.mode);
+        const date = fmtDate(act.startTime);
+        const startStr = new Date(act.startTime * 1000).toLocaleTimeString(
+          "pt-BR",
+          { hour: "2-digit", minute: "2-digit" }
+        );
+        const endStr = new Date(act.endTime * 1000).toLocaleTimeString(
+          "pt-BR",
+          { hour: "2-digit", minute: "2-digit" }
+        );
+
+        const lines: string[] = [
+          `🏃 **${act.name}**`,
+          `📅 ${date} · ${startStr} → ${endStr}`,
+          `🏷️ Tipo: ${sport} · Dispositivo: ${act.device || "–"}`,
+          ``,
+          `━━━ Resumo ━━━`,
+        ];
+
+        if (act.distance > 0) {
+          lines.push(`📏 Distância: ${(act.distance / 1000).toFixed(2)} km`);
+        }
+        lines.push(`⏱️ Duração: ${fmtDuration(act.totalTime)}`);
+        if (act.workoutTime && act.workoutTime !== act.totalTime) {
+          lines.push(`🏃 Tempo ativo: ${fmtDuration(act.workoutTime)}`);
+        }
+
+        lines.push(``, `━━━ Pace & Velocidade ━━━`);
+        if (act.avgSpeed > 0 && act.distance > 0) {
+          const avgPaceSec = act.totalTime / (act.distance / 1000);
+          lines.push(`🏃 Pace médio: ${fmtPace(avgPaceSec)}`);
+        }
+        if (act.adjustedPace > 0) {
+          lines.push(`⛰️ Pace ajustado (GAP): ${fmtPace(act.adjustedPace)}`);
+        }
+        if (act.best > 0) {
+          lines.push(`⚡ Melhor pace (fastest): ${fmtPace(act.best)}`);
+        }
+        if (act.bestKm > 0) {
+          lines.push(`🏅 Melhor km: ${fmtPace(act.bestKm)}`);
+        }
+
+        lines.push(``, `━━━ Frequência Cardíaca ━━━`);
+        if (act.avgHr > 0) lines.push(`❤️ FC média: ${act.avgHr} bpm`);
+
+        if (act.avgCadence > 0 || act.avgPower > 0 || act.step > 0) {
+          lines.push(``, `━━━ Outros ━━━`);
+          if (act.avgCadence > 0)
+            lines.push(`🦵 Cadência média: ${act.avgCadence} spm`);
+          if (act.avgPower > 0)
+            lines.push(`⚡ Potência média: ${act.avgPower} W`);
+          if (act.step > 0)
+            lines.push(`👟 Passadas: ${act.step.toLocaleString()}`);
+        }
+
+        if (act.ascent > 0 || act.descent > 0) {
+          lines.push(``, `━━━ Elevação ━━━`);
+          if (act.ascent > 0) lines.push(`⬆️ Subida: ${act.ascent} m`);
+          if (act.descent > 0) lines.push(`⬇️ Descida: ${act.descent} m`);
+        }
+
+        lines.push(``, `━━━ Carga ━━━`);
+        if (act.calorie > 0)
+          lines.push(`🔥 Calorias: ${Math.round(act.calorie / 1000)} kcal`);
+        if (act.trainingLoad > 0)
+          lines.push(`💪 Training Load: ${act.trainingLoad}`);
+
+        lines.push(``, `\`labelId: ${act.labelId}\``);
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: lines.join("\n"),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Falha ao buscar detalhes: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
   // --- list_activities ---
   server.tool(
     "list_activities",
@@ -692,7 +809,7 @@ export function createCorosServer(): McpServer {
           if (act.calorie > 0) parts.push(`${Math.round(act.calorie / 1000)} kcal`);
           if (act.trainingLoad > 0) parts.push(`Load: ${act.trainingLoad}`);
 
-          lines.push(`• [${date}] **${act.name}** (${sport})`);
+          lines.push(`• [${date}] **${act.name}** (${sport}) \`ID: ${act.labelId}\``);
           lines.push(`  ${parts.join(" | ")}`);
         }
 
