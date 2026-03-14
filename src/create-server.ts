@@ -557,6 +557,15 @@ export function createCorosServer(): McpServer {
     }
   );
 
+  // COROS pace zone boundaries (confirmed from native workouts via API inspection)
+  const COROS_PACE_ZONES: Record<number, { low: number; high: number }> = {
+    1: { low: 79,  high: 86  },  // Easy / Recovery
+    2: { low: 87,  high: 92  },  // Aerobic
+    3: { low: 93,  high: 97  },  // Tempo
+    4: { low: 98,  high: 102 },  // Threshold
+    5: { low: 103, high: 112 },  // VO2max
+  };
+
   const RunStepSchema = z.object({
     type: z
       .enum(["warmup", "active", "rest", "cooldown", "interval"])
@@ -573,6 +582,13 @@ export function createCorosServer(): McpServer {
       .enum(["open", "pace", "heartrate"])
       .default("open")
       .describe("Target type: 'open' (no target), 'pace' (s/km), 'heartrate' (bpm)"),
+    paceZone: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .optional()
+      .describe("COROS training zone 1-5. PREFER this over paceLowPercent/paceHighPercent — sets exact COROS zone boundaries automatically. Zone 1=Easy (79-86% LTSP), Zone 2=Aerobic (87-92%), Zone 3=Tempo (93-97%), Zone 4=Threshold (98-102%), Zone 5=VO2max (103-112%). Requires targetType='pace'."),
     paceLow: z
       .number()
       .int()
@@ -601,12 +617,12 @@ export function createCorosServer(): McpServer {
       .number()
       .int()
       .optional()
-      .describe("Pace as % of lactate threshold pace — low bound (e.g. 79 = 79%). Shows training zone label in COROS app. Auto-fetches LTSP from your profile."),
+      .describe("Pace as % of lactate threshold pace — low bound. Use paceZone instead when possible to avoid COROS zone snapping issues."),
     paceHighPercent: z
       .number()
       .int()
       .optional()
-      .describe("Pace as % of lactate threshold pace — high bound (e.g. 86 = 86%). Shows training zone label in COROS app."),
+      .describe("Pace as % of lactate threshold pace — high bound. Use paceZone instead when possible."),
     hrLowPercent: z
       .number()
       .int()
@@ -621,7 +637,16 @@ export function createCorosServer(): McpServer {
 
   server.tool(
     "create_running_workout",
-    "Create a running workout (with intervals, pace targets, or heart rate zones) on COROS Training Hub. Supports warmup, active (treino), rest, cooldown, and interval steps. Each step has a duration type (time/distance/training_load/open), a target type (open/pace/heartrate), and optional pace or HR range. Pace is in seconds/km (e.g. 300 = 5:00/km).",
+    `Create a running workout (with intervals, pace targets, or heart rate zones) on COROS Training Hub. Supports warmup, active (treino), rest, cooldown, and interval steps. Each step has a duration type (time/distance/training_load/open), a target type (open/pace/heartrate), and optional pace or HR range. Pace is in seconds/km (e.g. 300 = 5:00/km).
+
+TRAINING ZONES (use paceZone field — exact COROS boundaries):
+  Zone 1 = Easy/Recovery    (79-86% LTSP)  — regenerativo, volume leve
+  Zone 2 = Aerobic          (87-92% LTSP)  — base aeróbica, volume progressivo
+  Zone 3 = Tempo            (93-97% LTSP)  — limiar aeróbico, corrida de tempo
+  Zone 4 = Threshold        (98-102% LTSP) — limiar anaeróbico, corrida de ritmo
+  Zone 5 = VO2max           (103-112% LTSP)— intervalos curtos/médios, VO2max
+
+IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent when targeting a training zone. COROS snaps percentages to fixed zone boundaries — arbitrary % values may land in the wrong zone.`,
     {
       name: z.string().describe("Workout name (e.g. 'Intervalos 5x1km')"),
       overview: z.string().default("").describe("Workout description"),
@@ -642,22 +667,36 @@ export function createCorosServer(): McpServer {
           };
         }
 
-        const runSteps: RunStep[] = steps.map((s) => ({
-          type: s.type as RunStepType,
-          durationType: s.durationType as RunDurationType,
-          durationValue: s.durationValue,
-          targetType: s.targetType as RunTargetType,
-          paceLow: s.paceLow,
-          paceHigh: s.paceHigh,
-          paceLowPercent: s.paceLowPercent,
-          paceHighPercent: s.paceHighPercent,
-          hrLow: s.hrLow,
-          hrHigh: s.hrHigh,
-          hrLowPercent: s.hrLowPercent,
-          hrHighPercent: s.hrHighPercent,
-          repeat: s.repeat,
-          repeatRestSeconds: s.repeatRestSeconds,
-        }));
+        const runSteps: RunStep[] = steps.map((s) => {
+          // paceZone takes priority — maps to exact COROS zone boundaries
+          let paceLowPercent = s.paceLowPercent;
+          let paceHighPercent = s.paceHighPercent;
+          let targetType = s.targetType as RunTargetType;
+          if (s.paceZone != null) {
+            const zone = COROS_PACE_ZONES[s.paceZone];
+            if (zone) {
+              paceLowPercent = zone.low;
+              paceHighPercent = zone.high;
+              targetType = "pace";
+            }
+          }
+          return {
+            type: s.type as RunStepType,
+            durationType: s.durationType as RunDurationType,
+            durationValue: s.durationValue,
+            targetType,
+            paceLow: s.paceLow,
+            paceHigh: s.paceHigh,
+            paceLowPercent,
+            paceHighPercent,
+            hrLow: s.hrLow,
+            hrHigh: s.hrHigh,
+            hrLowPercent: s.hrLowPercent,
+            hrHighPercent: s.hrHighPercent,
+            repeat: s.repeat,
+            repeatRestSeconds: s.repeatRestSeconds,
+          };
+        });
 
         const result = await createRunningWorkout(auth, name, overview, runSteps, ltspSeconds);
         const durationMin = Math.round(result.duration / 60);
@@ -677,8 +716,11 @@ export function createCorosServer(): McpServer {
             else if (s.durationType === "open") dur = "aberto";
             else dur = `${s.durationValue} (carga)`;
             let target = "";
-            if (s.targetType === "pace") {
-              if (s.paceLowPercent != null || s.paceHighPercent != null) {
+            if (s.targetType === "pace" || s.paceZone != null) {
+              if (s.paceZone != null) {
+                const z = COROS_PACE_ZONES[s.paceZone];
+                target = z ? ` @ Zona ${s.paceZone} (${z.low}-${z.high}% LTSP)` : ` @ Zona ${s.paceZone}`;
+              } else if (s.paceLowPercent != null || s.paceHighPercent != null) {
                 const lo = s.paceLowPercent, hi = s.paceHighPercent;
                 if (lo != null && hi != null) target = ` @ ${lo}-${hi}% LTSP`;
                 else target = ` @ ${lo ?? hi}% LTSP`;
