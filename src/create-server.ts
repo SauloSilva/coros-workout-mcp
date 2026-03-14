@@ -16,6 +16,7 @@ import {
   querySchedule,
   queryScheduleRaw,
   scheduleWorkout,
+  removeScheduledWorkout,
   activityModeName,
   fmtDate,
   fmtDuration,
@@ -1421,6 +1422,39 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
               text: `Falha ao agendar treino: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ── remove_scheduled_workout ──────────────────────────────────────────────
+  server.tool(
+    "remove_scheduled_workout",
+    "Remove a scheduled workout from the COROS training calendar. Use list_schedule or inspect_schedule_raw to find the idInPlan of the entry to remove.",
+    {
+      idInPlan: z
+        .string()
+        .describe("The idInPlan of the scheduled entry to remove (visible in list_schedule or inspect_schedule_raw)"),
+    },
+    async ({ idInPlan }) => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) {
+          return {
+            content: [{ type: "text" as const, text: "Not authenticated. Use authenticate_coros first." }],
+            isError: true,
+          };
+        }
+
+        await removeScheduledWorkout(auth, idInPlan);
+
+        return {
+          content: [{ type: "text" as const, text: `✅ Treino (idInPlan=${idInPlan}) removido da agenda com sucesso!` }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Falha ao remover treino: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         };
       }

@@ -1711,6 +1711,65 @@ export async function scheduleWorkout(
   }
 }
 
+export async function removeScheduledWorkout(
+  auth: AuthData,
+  idInPlan: string // the idInPlan of the scheduled entry to remove
+): Promise<void> {
+  const apiUrl = REGION_URLS[auth.region];
+
+  // Query a wide schedule range to find the entity and its planId
+  const now = new Date();
+  const past = new Date(now); past.setDate(now.getDate() - 90);
+  const future = new Date(now); future.setDate(now.getDate() + 90);
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+
+  const schedRes = await fetch(
+    `${apiUrl}/training/schedule/query?startDate=${fmt(past)}&endDate=${fmt(future)}&supportRestExercise=1`,
+    { method: "GET", headers: apiHeaders(auth) }
+  );
+  const schedData = await schedRes.json() as {
+    result: string;
+    data?: {
+      entities?: Array<{ idInPlan: string | number; planId?: string | number }>;
+    };
+  };
+
+  if (schedData.result !== "0000") {
+    throw new Error(`COROS API error (/training/schedule/query): ${(schedData as { message?: string }).message || schedData.result}`);
+  }
+
+  const entities = schedData.data?.entities ?? [];
+  const entity = entities.find((e) => String(e.idInPlan) === String(idInPlan));
+
+  if (!entity) {
+    throw new Error(`Entrada com idInPlan=${idInPlan} não encontrada na agenda. Use inspect_schedule_raw para ver os idInPlan disponíveis.`);
+  }
+
+  const planId = String(entity.planId ?? "");
+  if (!planId) {
+    throw new Error(`planId não encontrado para idInPlan=${idInPlan}.`);
+  }
+
+  const payload = {
+    versionObjects: [{ id: String(idInPlan), planProgramId: String(idInPlan), planId, status: 3 }],
+    pbVersion: 2,
+  };
+
+  const updateRes = await fetch(`${apiUrl}/training/schedule/update`, {
+    method: "POST",
+    headers: apiHeaders(auth),
+    body: JSON.stringify(payload),
+  });
+  const updateData = await updateRes.json() as { result: string; message?: string };
+  if (updateData.result !== "0000") {
+    if (AUTH_ERROR_CODES.has(updateData.result)) {
+      throw new Error(`COROS auth error (/training/schedule/update): token invalid or expired. Use authenticate_coros to re-login.`);
+    }
+    throw new Error(`COROS API error (/training/schedule/update): ${updateData.message || updateData.result}`);
+  }
+}
+
 export async function queryScheduleRaw(
   startDate: string,
   endDate: string,
