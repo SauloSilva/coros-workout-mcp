@@ -11,10 +11,16 @@ import {
   queryWorkouts,
   queryActivities,
   queryActivityDetail,
+  queryActivityDetailFull,
+  queryAnalytics,
   activityModeName,
   fmtDate,
   fmtDuration,
   fmtPace,
+  tiredStateLabel,
+  performanceLabel,
+  feelLabel,
+  ZONE_TYPE_LABELS,
   queryExerciseCatalog,
   fetchI18nStrings,
   buildCatalogFromRaw,
@@ -624,10 +630,176 @@ export function createCorosServer(): McpServer {
     }
   );
 
+  // --- get_training_metrics ---
+  server.tool(
+    "get_training_metrics",
+    "Get detailed personal training metrics from COROS: VO2max, LTHR, lactate threshold pace, resting HR, HRV, ATL/CTL/TSB (training load balance), fatigue state, HR zones distribution, and weekly load vs recommended.",
+    {},
+    async () => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) throw new Error("Not authenticated. Please login first.");
+
+        const { today, sportStatistic, weekList, hrTimeAreaList, tlAreaList } =
+          await queryAnalytics(auth);
+
+        const HR_ZONE_NAMES = ["Z1", "Z2", "Z3", "Z4", "Z5", "Z5+"];
+        const TL_ZONE_NAMES = [
+          "Muito fácil",
+          "Fácil",
+          "Moderado",
+          "Difícil",
+          "Muito difícil",
+          "Máximo",
+          "Extremo",
+        ];
+
+        const lines: string[] = ["📊 **Métricas de Treinamento — COROS**", ""];
+
+        // ── Fitness Baseline ──────────────────────────────────────────────────
+        lines.push("━━━ Fitness Base ━━━");
+        if (today.vo2max) lines.push(`🫁 VO2max: ${today.vo2max} ml/kg/min`);
+        if (today.lthr) lines.push(`❤️ Limiar anaeróbico (LTHR): ${today.lthr} bpm`);
+        if (today.ltsp) lines.push(`🏃 Limiar anaeróbico (LTSP): ${fmtPace(today.ltsp)}`);
+        if (today.rhr) lines.push(`💤 FC de repouso: ${today.rhr} bpm`);
+        if (today.avgSleepHrv) {
+          const hrvStatus =
+            today.sleepHrvBase && today.avgSleepHrv >= today.sleepHrvBase * 0.95
+              ? "✅ acima da base"
+              : today.sleepHrvBase && today.avgSleepHrv >= today.sleepHrvBase * 0.8
+              ? "⚠️ levemente abaixo"
+              : "🔴 abaixo da base";
+          lines.push(
+            `🧠 HRV sono: ${today.avgSleepHrv} ms (base: ${today.sleepHrvBase ?? "–"} ms) ${hrvStatus}`
+          );
+        }
+        lines.push("");
+
+        // ── Training Load ─────────────────────────────────────────────────────
+        lines.push("━━━ Carga de Treinamento ━━━");
+        if (today.ati) lines.push(`⚡ ATL (carga aguda 7d): ${today.ati}`);
+        if (today.cti) lines.push(`💪 CTL (fitness crônico): ${today.cti}`);
+        if (today.tib !== undefined) {
+          const tibSign = today.tib >= 0 ? "+" : "";
+          lines.push(`⚖️ TSB (balanço): ${tibSign}${today.tib}`);
+        }
+        if (today.trainingLoadRatio) {
+          lines.push(
+            `📈 Ratio ATL/CTL: ${today.trainingLoadRatio.toFixed(2)} (ótimo: 0.80–1.50)`
+          );
+        }
+        if (today.tiredRateStateNew) {
+          lines.push(
+            `😴 Estado de fadiga: ${tiredStateLabel(today.tiredRateStateNew)} (${today.tiredRateNew > 0 ? "+" : ""}${today.tiredRateNew}%)`
+          );
+        }
+        if (today.performance !== undefined) {
+          lines.push(`🎯 Estado de forma: ${performanceLabel(today.performance)}`);
+        }
+        if (today.staminaLevel) {
+          lines.push(
+            `🔋 Stamina atual: ${today.staminaLevel.toFixed(1)} (7d: ${today.staminaLevel7d})`
+          );
+        }
+        lines.push("");
+
+        // ── Accumulated Load ──────────────────────────────────────────────────
+        lines.push("━━━ Carga Acumulada ━━━");
+        if (today.t7d) lines.push(`📅 Últimos 7 dias: ${today.t7d}`);
+        if (today.t28d) lines.push(`📅 Últimos 28 dias: ${today.t28d}`);
+        if (today.recomendTlMin && today.recomendTlMax) {
+          lines.push(
+            `🎯 Zona semanal recomendada: ${today.recomendTlMin}–${today.recomendTlMax}`
+          );
+        }
+        lines.push("");
+
+        // ── Weekly Loads ──────────────────────────────────────────────────────
+        if (weekList.length > 0) {
+          lines.push("━━━ Carga Semanal (recentes) ━━━");
+          const sortedWeeks = [...weekList].sort(
+            (a, b) => b.firstDayOfWeek - a.firstDayOfWeek
+          );
+          for (const w of sortedWeeks.slice(0, 4)) {
+            const d = String(w.firstDayOfWeek);
+            const label = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
+            const bar =
+              w.trainingLoad >= w.recomendTlMin &&
+              w.trainingLoad <= w.recomendTlMax
+                ? "✅"
+                : w.trainingLoad < w.recomendTlMin
+                ? "⬇️"
+                : "⬆️";
+            lines.push(
+              `  ${bar} Sem. ${label}: ${w.trainingLoad} (rec: ${w.recomendTlMin}–${w.recomendTlMax})`
+            );
+          }
+          lines.push("");
+        }
+
+        // ── HR Zones ─────────────────────────────────────────────────────────
+        if (hrTimeAreaList.length > 0) {
+          lines.push("━━━ Distribuição Zonas FC (tempo) ━━━");
+          for (const z of hrTimeAreaList) {
+            if (z.ratio === 0) continue;
+            const name = HR_ZONE_NAMES[z.index] ?? `Z${z.index + 1}`;
+            const bar = "█".repeat(Math.round(z.ratio / 5));
+            lines.push(`  ${name}: ${bar} ${z.ratio.toFixed(1)}%`);
+          }
+          lines.push("");
+        }
+
+        // ── TL Zones ─────────────────────────────────────────────────────────
+        if (tlAreaList.length > 0) {
+          lines.push("━━━ Distribuição Carga (intensidade) ━━━");
+          for (const z of tlAreaList) {
+            if (z.ratio === 0) continue;
+            const name = TL_ZONE_NAMES[z.index] ?? `Z${z.index}`;
+            const bar = "█".repeat(Math.round(z.ratio / 5));
+            lines.push(`  ${name}: ${bar} ${z.ratio.toFixed(1)}%`);
+          }
+          lines.push("");
+        }
+
+        // ── Sport Stats ───────────────────────────────────────────────────────
+        const relevantStats = sportStatistic.filter(
+          (s) => s.sportType !== 65535 && s.count > 0
+        );
+        if (relevantStats.length > 0) {
+          lines.push("━━━ Estatísticas por Esporte ━━━");
+          for (const s of relevantStats) {
+            const sport = activityModeName(s.sportType === 402 ? 22 : s.sportType === 100 ? 8 : s.sportType);
+            const dist =
+              s.distance > 0 ? ` | ${(s.distance / 1000).toFixed(0)} km` : "";
+            const pace =
+              s.avgPace && s.avgPace > 0 ? ` | Pace: ${fmtPace(s.avgPace)}` : "";
+            lines.push(
+              `  ${sport}: ${s.count}x | ${fmtDuration(s.duration)}${dist}${pace} | FC: ${s.avgHeartRate} bpm`
+            );
+          }
+        }
+
+        return {
+          content: [{ type: "text" as const, text: lines.join("\n") }],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Falha ao buscar métricas: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
   // --- get_activity_details ---
   server.tool(
     "get_activity_details",
-    "Get detailed metrics for a specific COROS activity by its ID (labelId). Use list_activities first to get the labelId.",
+    "Get detailed metrics for a specific COROS activity by its ID (labelId). Use list_activities first to get the labelId. Returns laps by km, HR zones, running dynamics, aerobic/anaerobic effect, weather and more.",
     {
       labelId: z.string().describe("Activity ID (labelId) from list_activities"),
     },
@@ -636,94 +808,145 @@ export function createCorosServer(): McpServer {
         const auth = await getValidAuth();
         if (!auth) throw new Error("Not authenticated. Please login first.");
 
-        const act = await queryActivityDetail(auth, labelId);
-        if (!act) {
+        // Step 1: Find the basic activity (to get sportType)
+        const basicAct = await queryActivityDetail(auth, labelId);
+        if (!basicAct) {
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Atividade com ID ${labelId} não encontrada.`,
-              },
-            ],
+            content: [{ type: "text" as const, text: `Atividade com ID ${labelId} não encontrada.` }],
           };
         }
 
-        const sport = activityModeName(act.mode);
-        const date = fmtDate(act.startTime);
-        const startStr = new Date(act.startTime * 1000).toLocaleTimeString(
-          "pt-BR",
-          { hour: "2-digit", minute: "2-digit" }
-        );
-        const endStr = new Date(act.endTime * 1000).toLocaleTimeString(
-          "pt-BR",
-          { hour: "2-digit", minute: "2-digit" }
-        );
+        // Step 2: Fetch full details via /activity/detail/query
+        const { summary: s, lapList, zoneList, weather, sportFeelInfo } =
+          await queryActivityDetailFull(auth, labelId, basicAct.sportType);
+
+        // timestamps are in centiseconds
+        const startTs = Math.floor(s.startTimestamp / 100);
+        const endTs = Math.floor(s.endTimestamp / 100);
+        const totalSec = Math.floor(s.totalTime / 100);
+        const distKm = s.distance / 100000; // cm → km
+        const sport = activityModeName(basicAct.mode);
+        const date = fmtDate(startTs);
+        const startStr = new Date(startTs * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+        const endStr = new Date(endTs * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 
         const lines: string[] = [
-          `🏃 **${act.name}**`,
-          `📅 ${date} · ${startStr} → ${endStr}`,
-          `🏷️ Tipo: ${sport} · Dispositivo: ${act.device || "–"}`,
-          ``,
-          `━━━ Resumo ━━━`,
+          `🏃 **${s.name}**`,
+          `📅 ${date} · ${startStr} → ${endStr} · ${sport}`,
+          `🖥️ Dispositivo: ${basicAct.device || "–"}`,
         ];
 
-        if (act.distance > 0) {
-          lines.push(`📏 Distância: ${(act.distance / 1000).toFixed(2)} km`);
+        if (sportFeelInfo?.feelType && sportFeelInfo.feelType > 0) {
+          lines.push(`💬 Sensação: ${feelLabel(sportFeelInfo.feelType)}`);
         }
-        lines.push(`⏱️ Duração: ${fmtDuration(act.totalTime)}`);
-        if (act.workoutTime && act.workoutTime !== act.totalTime) {
-          lines.push(`🏃 Tempo ativo: ${fmtDuration(act.workoutTime)}`);
+        if (sportFeelInfo?.sportNote) lines.push(`📝 Nota: ${sportFeelInfo.sportNote}`);
+        lines.push(``);
+
+        // ── Resumo ────────────────────────────────────────────────────────────
+        lines.push(`━━━ Resumo ━━━`);
+        if (distKm > 0) lines.push(`📏 Distância: ${distKm.toFixed(2)} km`);
+        lines.push(`⏱️ Duração: ${fmtDuration(totalSec)}`);
+        if (s.trainingLoad > 0) lines.push(`💪 Training Load: ${s.trainingLoad}`);
+        if (s.calories > 0) lines.push(`🔥 Calorias: ${Math.round(s.calories / 1000)} kcal`);
+        if (s.aerobicEffect > 0) {
+          const aerStars = "★".repeat(Math.round(s.aerobicEffect)) + "☆".repeat(5 - Math.round(s.aerobicEffect));
+          lines.push(`💙 Efeito aeróbico: ${s.aerobicEffect.toFixed(1)} ${aerStars}`);
+        }
+        if (s.anaerobicEffect > 0) {
+          const anStars = "★".repeat(Math.round(s.anaerobicEffect)) + "☆".repeat(5 - Math.round(s.anaerobicEffect));
+          lines.push(`🔴 Efeito anaeróbico: ${s.anaerobicEffect.toFixed(1)} ${anStars}`);
+        }
+        if (s.currentVo2Max > 0) lines.push(`🫁 VO2max: ${s.currentVo2Max}`);
+        lines.push(``);
+
+        // ── Pace & Velocidade ─────────────────────────────────────────────────
+        lines.push(`━━━ Pace & Velocidade ━━━`);
+        if (s.avgSpeed > 0) lines.push(`🏃 Pace médio: ${fmtPace(s.avgSpeed)}`);
+        if (s.adjustedPace > 0) lines.push(`⛰️ Pace ajustado (GAP): ${fmtPace(s.adjustedPace)}`);
+        if (s.bestKm > 0) lines.push(`🏅 Melhor km: ${fmtPace(s.bestKm)}`);
+        lines.push(``);
+
+        // ── FC ───────────────────────────────────────────────────────────────
+        lines.push(`━━━ Frequência Cardíaca ━━━`);
+        if (s.avgHr > 0) lines.push(`❤️ FC média: ${s.avgHr} bpm`);
+        if (s.maxHr > 0) lines.push(`🔴 FC máxima: ${s.maxHr} bpm`);
+        lines.push(``);
+
+        // ── Running Dynamics ─────────────────────────────────────────────────
+        const hasDyn = s.avgCadence > 0 || s.avgPower > 0 || s.avgGroundTime > 0;
+        if (hasDyn) {
+          lines.push(`━━━ Dinâmica de Corrida ━━━`);
+          if (s.avgCadence > 0) lines.push(`🦵 Cadência: ${s.avgCadence} spm (max: ${s.maxCadence})`);
+          if (s.avgPower > 0) lines.push(`⚡ Potência: ${s.avgPower} W (max: ${s.maxPower} W)`);
+          if (s.avgGroundTime > 0) lines.push(`🦶 Contato com solo: ${s.avgGroundTime} ms`);
+          if (s.avgVertVibration > 0) lines.push(`↕️ Oscilação vertical: ${(s.avgVertVibration / 10).toFixed(1)} cm`);
+          if (s.avgVertRatio > 0) lines.push(`📐 Ratio vertical: ${(s.avgVertRatio / 10).toFixed(1)}%`);
+          if (s.avgStepLen > 0) lines.push(`👟 Comprimento da passada: ${(s.avgStepLen / 100).toFixed(2)} m`);
+          lines.push(``);
         }
 
-        lines.push(``, `━━━ Pace & Velocidade ━━━`);
-        if (act.avgSpeed > 0 && act.distance > 0) {
-          const avgPaceSec = act.totalTime / (act.distance / 1000);
-          lines.push(`🏃 Pace médio: ${fmtPace(avgPaceSec)}`);
-        }
-        if (act.adjustedPace > 0) {
-          lines.push(`⛰️ Pace ajustado (GAP): ${fmtPace(act.adjustedPace)}`);
-        }
-        if (act.best > 0) {
-          lines.push(`⚡ Melhor pace (fastest): ${fmtPace(act.best)}`);
-        }
-        if (act.bestKm > 0) {
-          lines.push(`🏅 Melhor km: ${fmtPace(act.bestKm)}`);
+        // ── Elevação ─────────────────────────────────────────────────────────
+        if (s.elevGain > 0 || s.totalDescent > 0) {
+          lines.push(`━━━ Elevação ━━━`);
+          if (s.elevGain > 0) lines.push(`⬆️ Subida: ${s.elevGain} m`);
+          if (s.totalDescent > 0) lines.push(`⬇️ Descida: ${s.totalDescent} m`);
+          lines.push(``);
         }
 
-        lines.push(``, `━━━ Frequência Cardíaca ━━━`);
-        if (act.avgHr > 0) lines.push(`❤️ FC média: ${act.avgHr} bpm`);
-
-        if (act.avgCadence > 0 || act.avgPower > 0 || act.step > 0) {
-          lines.push(``, `━━━ Outros ━━━`);
-          if (act.avgCadence > 0)
-            lines.push(`🦵 Cadência média: ${act.avgCadence} spm`);
-          if (act.avgPower > 0)
-            lines.push(`⚡ Potência média: ${act.avgPower} W`);
-          if (act.step > 0)
-            lines.push(`👟 Passadas: ${act.step.toLocaleString()}`);
+        // ── Clima ────────────────────────────────────────────────────────────
+        if (weather && weather.temperature) {
+          const tempC = (weather.temperature / 10).toFixed(1);
+          const feelC = weather.bodyFeelTemp ? (weather.bodyFeelTemp / 10).toFixed(1) : null;
+          const humidity = weather.humidity ? (weather.humidity / 10).toFixed(0) : null;
+          const wind = weather.windSpeed ? (weather.windSpeed / 10).toFixed(1) : null;
+          lines.push(`━━━ Clima ━━━`);
+          lines.push(`🌡️ Temperatura: ${tempC}°C${feelC ? ` (sensação: ${feelC}°C)` : ""}`);
+          if (humidity) lines.push(`💧 Umidade: ${humidity}%`);
+          if (wind) lines.push(`💨 Vento: ${wind} km/h`);
+          lines.push(``);
         }
 
-        if (act.ascent > 0 || act.descent > 0) {
-          lines.push(``, `━━━ Elevação ━━━`);
-          if (act.ascent > 0) lines.push(`⬆️ Subida: ${act.ascent} m`);
-          if (act.descent > 0) lines.push(`⬇️ Descida: ${act.descent} m`);
+        // ── Zonas de FC ───────────────────────────────────────────────────────
+        const hrZoneGroup = zoneList.find((z) => z.type === 126);
+        if (hrZoneGroup) {
+          const zones = hrZoneGroup.zoneItemList.filter((z) => z.percent > 0 && z.zoneIndex > 0);
+          if (zones.length > 0) {
+            lines.push(`━━━ Zonas de FC (nesta atividade) ━━━`);
+            const zoneNames = ["–", "Z1", "Z2", "Z3", "Z4", "Z5", "Z5+"];
+            for (const z of zones) {
+              const name = zoneNames[z.zoneIndex] ?? `Z${z.zoneIndex}`;
+              const bar = "█".repeat(Math.max(1, Math.round(z.percent / 5)));
+              const dur = fmtDuration(z.second);
+              lines.push(`  ${name} (${z.leftScope}–${z.rightScope} bpm): ${bar} ${z.percent}% · ${dur}`);
+            }
+            lines.push(``);
+          }
         }
 
-        lines.push(``, `━━━ Carga ━━━`);
-        if (act.calorie > 0)
-          lines.push(`🔥 Calorias: ${Math.round(act.calorie / 1000)} kcal`);
-        if (act.trainingLoad > 0)
-          lines.push(`💪 Training Load: ${act.trainingLoad}`);
-
-        lines.push(``, `\`labelId: ${act.labelId}\``);
+        // ── Laps por Km ───────────────────────────────────────────────────────
+        const kmLapGroup = lapList.find((g) => g.lapDistance === 100000);
+        if (kmLapGroup && kmLapGroup.lapItemList.length > 0) {
+          const fastIdx = kmLapGroup.fastLapIndexList ?? [];
+          lines.push(`━━━ Laps por km ━━━`);
+          lines.push(`  Km | Pace      | FC  | Cadência | Potência | Subida`);
+          lines.push(`  ---|-----------|-----|----------|----------|-------`);
+          for (const lap of kmLapGroup.lapItemList) {
+            const isFast = fastIdx.includes(lap.lapIndex);
+            const km = lap.distance > 0 ? (lap.distance / 100000).toFixed(2) : "–";
+            const pace = lap.avgPace > 0 ? fmtPace(lap.avgPace) : "–";
+            const hr = lap.avgHr > 0 ? `${lap.avgHr}` : "–";
+            const cad = lap.avgCadence > 0 ? `${lap.avgCadence}` : "–";
+            const pow = lap.avgPower > 0 ? `${lap.avgPower}W` : "–";
+            const elev = lap.elevGain > 0 ? `+${lap.elevGain}m` : "–";
+            const flag = isFast ? " ⚡" : "";
+            lines.push(
+              `  ${String(lap.lapIndex).padStart(2)} | ${pace.padEnd(9)} | ${hr.padEnd(3)} | ${cad.padEnd(8)} | ${pow.padEnd(8)} | ${elev}${flag}`
+            );
+          }
+        }
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: lines.join("\n"),
-            },
-          ],
+          content: [{ type: "text" as const, text: lines.join("\n") }],
         };
       } catch (error) {
         return {

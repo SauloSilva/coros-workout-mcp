@@ -936,6 +936,178 @@ export async function queryActivityDetail(
   return null;
 }
 
+// ─── Full Activity Detail ────────────────────────────────────────────────────
+
+export interface LapItem {
+  lapIndex: number;
+  /** Distance in cm */
+  distance: number;
+  startTimestamp: number;
+  endTimestamp: number;
+  avgHr: number;
+  maxHr: number;
+  minHr: number;
+  /** Pace in s/km */
+  avgPace: number;
+  avgCadence: number;
+  avgPower: number;
+  elevGain: number;
+  avgGroundTime: number;
+  avgStrideLength: number;
+  lapType: number;
+}
+
+export interface LapGroup {
+  type: number;
+  lapDistance: number;
+  fastLapIndexList: number[];
+  lapItemList: LapItem[];
+}
+
+export interface ZoneItem {
+  zoneIndex: number;
+  leftScope: number;
+  rightScope: number;
+  percent: number;
+  second: number;
+}
+
+export interface ZoneGroup {
+  type: number;
+  zoneItemList: ZoneItem[];
+}
+
+export interface ActivitySummaryFull {
+  name: string;
+  sportType: number;
+  startTimestamp: number;
+  endTimestamp: number;
+  totalTime: number;
+  /** Distance in cm */
+  distance: number;
+  /** Calories × 1000 */
+  calories: number;
+  avgHr: number;
+  maxHr: number;
+  /** Pace in s/km */
+  avgSpeed: number;
+  adjustedPace: number;
+  bestKm: number;
+  avgCadence: number;
+  avgPower: number;
+  maxPower: number;
+  maxCadence: number;
+  elevGain: number;
+  totalDescent: number;
+  trainingLoad: number;
+  aerobicEffect: number;
+  aerobicEffectState: number;
+  anaerobicEffect: number;
+  /** Ground contact time in ms */
+  avgGroundTime: number;
+  /** Vertical oscillation in mm */
+  avgVertVibration: number;
+  /** Vertical ratio in % × 10 */
+  avgVertRatio: number;
+  /** Step length in cm */
+  avgStepLen: number;
+  performance: number;
+  currentVo2Max: number;
+  staminaLevel7d: number;
+  standardRate: number;
+  planId?: string;
+  hasProgram: number;
+  lapDistance: number;
+}
+
+export interface WeatherInfo {
+  temperature: number;
+  humidity: number;
+  windSpeed: number;
+  windDirection: number;
+  bodyFeelTemp: number;
+  weatherType: number;
+}
+
+export interface SportFeelInfo {
+  feelType: number;
+  sportNote: string;
+}
+
+export interface ActivityDetailFull {
+  summary: ActivitySummaryFull;
+  lapList: LapGroup[];
+  zoneList: ZoneGroup[];
+  weather: WeatherInfo | null;
+  sportFeelInfo: SportFeelInfo | null;
+}
+
+const FEEL_LABELS: Record<number, string> = {
+  1: "😫 Muito difícil",
+  2: "😓 Difícil",
+  3: "😐 Normal",
+  4: "😊 Bem",
+  5: "🤩 Ótimo",
+};
+
+const ZONE_TYPE_LABELS: Record<number, string> = {
+  126: "FC",
+  130: "Pace",
+  173: "Pace (treino)",
+};
+
+export function feelLabel(feelType: number): string {
+  return FEEL_LABELS[feelType] ?? `Tipo ${feelType}`;
+}
+
+export async function queryActivityDetailFull(
+  auth: AuthData,
+  labelId: string,
+  sportType: number
+): Promise<ActivityDetailFull> {
+  const baseUrl = REGION_URLS[auth.region];
+  const res = await fetch(
+    `${baseUrl}/activity/detail/query?labelId=${labelId}&sportType=${sportType}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        accesstoken: auth.accessToken,
+        yfheader: JSON.stringify({ userId: auth.userId }),
+      },
+      body: JSON.stringify({}),
+    }
+  );
+
+  const data = (await res.json()) as {
+    result: string;
+    message?: string;
+    data?: {
+      summary: ActivitySummaryFull;
+      lapList: LapGroup[];
+      zoneList: ZoneGroup[];
+      weather: WeatherInfo;
+      sportFeelInfo: SportFeelInfo;
+    };
+  };
+
+  if (data.result !== "0000") {
+    throw new Error(
+      `COROS API error (/activity/detail/query): ${data.message || data.result}`
+    );
+  }
+
+  return {
+    summary: data.data!.summary,
+    lapList: data.data!.lapList ?? [],
+    zoneList: data.data!.zoneList ?? [],
+    weather: data.data!.weather ?? null,
+    sportFeelInfo: data.data!.sportFeelInfo ?? null,
+  };
+}
+
+export { ZONE_TYPE_LABELS, FEEL_LABELS, feelLabel as fmtFeel };
+
 /** Format pace (s/km) → "M:SS/km" */
 export function fmtPace(secPerKm: number): string {
   if (!secPerKm || secPerKm <= 0) return "–";
@@ -945,3 +1117,156 @@ export function fmtPace(secPerKm: number): string {
 }
 
 export { fmtDate, fmtDuration, activityModeName as fmtMode };
+
+// ─── Analytics ───────────────────────────────────────────────────────────────
+
+export interface DayMetrics {
+  happenDay: number;
+  /** Acute Training Load (short-term, ~7 days) */
+  ati: number;
+  /** Chronic Training Impulse (long-term fitness, ~42 days) */
+  cti: number;
+  /** Training Impulse Balance (TSB = CTL - ATL) */
+  tib: number;
+  /** Today's training load */
+  trainingLoad: number;
+  /** ATL/CTL ratio (optimal 0.8–1.5) */
+  trainingLoadRatio: number;
+  /** Fatigue state: 1=fresh, 2=light, 3=balanced, 4=tired, 5=very tired */
+  tiredRateStateNew: number;
+  /** Fatigue % */
+  tiredRateNew: number;
+  /** Performance state */
+  performance: number;
+  /** Current stamina level */
+  staminaLevel: number;
+  /** 7-day stamina level */
+  staminaLevel7d: number;
+  /** VO2max estimate */
+  vo2max: number;
+  /** Lactate threshold heart rate */
+  lthr: number;
+  /** Lactate threshold pace (s/km) */
+  ltsp: number;
+  /** Resting heart rate */
+  rhr: number;
+  /** Average sleep HRV */
+  avgSleepHrv?: number;
+  /** HRV baseline */
+  sleepHrvBase?: number;
+  /** 7-day accumulated load */
+  t7d: number;
+  /** 28-day accumulated load */
+  t28d: number;
+  /** Recommended weekly load min */
+  recomendTlMin: number;
+  /** Recommended weekly load max */
+  recomendTlMax: number;
+}
+
+export interface SportStat {
+  sportType: number;
+  count: number;
+  distance: number;
+  duration: number;
+  avgHeartRate: number;
+  avgPace?: number;
+  trainingLoad: number;
+}
+
+export interface ZoneArea {
+  index: number;
+  ratio: number;
+  value: number;
+}
+
+export interface WeekSummary {
+  firstDayOfWeek: number;
+  trainingLoad: number;
+  recomendTlMin: number;
+  recomendTlMax: number;
+}
+
+export interface AnalyticsData {
+  today: DayMetrics;
+  sportStatistic: SportStat[];
+  weekList: WeekSummary[];
+  hrTimeAreaList: ZoneArea[];
+  tlAreaList: ZoneArea[];
+  timeAreaList: ZoneArea[];
+}
+
+const TIRED_STATE_LABELS: Record<number, string> = {
+  1: "Muito descansado",
+  2: "Descansado",
+  3: "Equilibrado",
+  4: "Cansado",
+  5: "Muito cansado",
+};
+
+const PERFORMANCE_LABELS: Record<number, string> = {
+  1: "Em melhora",
+  2: "Mantendo",
+  3: "Em recuperação",
+  "-1": "Sem dados",
+};
+
+export function tiredStateLabel(state: number): string {
+  return TIRED_STATE_LABELS[state] ?? `Estado ${state}`;
+}
+
+export function performanceLabel(perf: number): string {
+  return PERFORMANCE_LABELS[perf] ?? `Estado ${perf}`;
+}
+
+export async function queryAnalytics(
+  auth: AuthData
+): Promise<AnalyticsData> {
+  const baseUrl = REGION_URLS[auth.region];
+
+  // We need any labelId to make the endpoint work; use a dummy one —
+  // the endpoint returns personal metrics regardless of the activity.
+  // Actually the endpoint works without labelId too when called as GET.
+  const url = `${baseUrl}/analyse/query`;
+  const res = await fetch(url, {
+    headers: {
+      accesstoken: auth.accessToken,
+      yfheader: JSON.stringify({ userId: auth.userId }),
+    },
+  });
+
+  const data = (await res.json()) as {
+    result: string;
+    message?: string;
+    data?: {
+      dayList: DayMetrics[];
+      t7dayList: DayMetrics[];
+      sportStatistic: SportStat[];
+      weekList: WeekSummary[];
+      summaryInfo: {
+        hrTimeAreaList: ZoneArea[];
+        tlAreaList: ZoneArea[];
+        timeAreaList: ZoneArea[];
+      };
+    };
+  };
+
+  if (data.result !== "0000") {
+    throw new Error(
+      `COROS API error (/analyse/query): ${data.message || data.result}`
+    );
+  }
+
+  const d = data.data!;
+  const t7 = d.t7dayList ?? d.dayList ?? [];
+  const today = t7[t7.length - 1] ?? ({} as DayMetrics);
+
+  return {
+    today,
+    sportStatistic: d.sportStatistic ?? [],
+    weekList: (d.weekList ?? []).slice(0, 6),
+    hrTimeAreaList: d.summaryInfo?.hrTimeAreaList ?? [],
+    tlAreaList: d.summaryInfo?.tlAreaList ?? [],
+    timeAreaList: d.summaryInfo?.timeAreaList ?? [],
+  };
+}
