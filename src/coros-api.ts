@@ -1589,6 +1589,37 @@ export interface ScheduleResult {
   entries: ScheduleEntry[];
 }
 
+export async function scheduleWorkout(
+  auth: AuthData,
+  workoutId: string,
+  date: string // YYYYMMDD
+): Promise<void> {
+  const detailRes = (await apiPost(auth, "/training/program/detail/query", { id: workoutId })) as {
+    data: Record<string, unknown>;
+  };
+  const program = detailRes.data;
+
+  if (!program || !program.id) {
+    throw new Error(`Workout not found: ${workoutId}`);
+  }
+
+  // Use a unique idInPlan derived from current timestamp (fits in safe integer range)
+  const idInPlan = Math.floor(Date.now() / 1000) % 999983;
+
+  const payload = {
+    entities: [
+      {
+        happenDay: date,
+        idInPlan,
+        sortNoInSchedule: 0,
+      },
+    ],
+    programs: [{ ...program, idInPlan }],
+  };
+
+  await apiPost(auth, "/training/schedule/update", payload);
+}
+
 export async function querySchedule(
   startDate: string,  // YYYYMMDD
   endDate: string,    // YYYYMMDD

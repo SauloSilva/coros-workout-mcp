@@ -14,6 +14,7 @@ import {
   queryActivityDetailFull,
   queryAnalytics,
   querySchedule,
+  scheduleWorkout,
   activityModeName,
   fmtDate,
   fmtDuration,
@@ -381,6 +382,7 @@ export function createCorosServer(): McpServer {
           limitSize: limit,
         })) as {
           data: Array<{
+            id: string;
             name: string;
             overview: string;
             sportType: number;
@@ -412,9 +414,10 @@ export function createCorosServer(): McpServer {
             const isRunning = w.sportType === 1;
             const sportLabel = isRunning ? "🏃 Corrida" : "💪 Musculação";
 
+            const idStr = w.id ? ` | ID: ${w.id}` : "";
             const header = isRunning
-              ? `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.exerciseNum || 0} etapas${dateStr})`
-              : `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.totalSets || 0} sets | ${w.exerciseNum || 0} exercises${dateStr})`;
+              ? `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.exerciseNum || 0} etapas${dateStr}${idStr})`
+              : `**${w.name}** [${sportLabel}] (~${durationMin} min | ${w.totalSets || 0} sets | ${w.exerciseNum || 0} exercises${dateStr}${idStr})`;
 
             // Build a map of groupId → sets for group containers (exerciseType=0)
             const groupSetsMap: Record<string, number> = {};
@@ -1341,6 +1344,60 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
             {
               type: "text" as const,
               text: `Falha ao buscar calendário: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ── schedule_workout ──────────────────────────────────────────────────────
+  server.tool(
+    "schedule_workout",
+    "Schedule an existing COROS workout on a specific date in the training calendar. Use list_workouts to get the workout ID first.",
+    {
+      workoutId: z
+        .string()
+        .describe("Workout ID from list_workouts (the numeric string shown after 'ID:')"),
+      date: z
+        .string()
+        .regex(/^\d{8}$/, "Date must be in YYYYMMDD format (e.g. 20260315)")
+        .describe("Date to schedule the workout in YYYYMMDD format (e.g. 20260315)"),
+    },
+    async ({ workoutId, date }) => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "Not authenticated. Use authenticate_coros first.",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        await scheduleWorkout(auth, workoutId, date);
+
+        const fmtDay = (d: string) => `${d.slice(6, 8)}/${d.slice(4, 6)}/${d.slice(0, 4)}`;
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Treino agendado para ${fmtDay(date)} com sucesso! Ele aparecerá no calendário do COROS Training Hub e sincronizará com o relógio.`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Falha ao agendar treino: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
           isError: true,
