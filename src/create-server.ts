@@ -9,6 +9,10 @@ import {
   calculateWorkout,
   addWorkout,
   queryWorkouts,
+  queryActivities,
+  activityModeName,
+  fmtDate,
+  fmtDuration,
   queryExerciseCatalog,
   fetchI18nStrings,
   buildCatalogFromRaw,
@@ -610,6 +614,102 @@ export function createCorosServer(): McpServer {
             {
               type: "text" as const,
               text: `Falha ao criar treino de corrida: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // --- list_activities ---
+  server.tool(
+    "list_activities",
+    "List recorded activities (actual workouts done) from COROS watch. Returns recent activities with stats like distance, pace, HR, duration.",
+    {
+      days: z
+        .number()
+        .min(1)
+        .max(365)
+        .default(30)
+        .describe("How many days back to look (default: 30)"),
+      size: z
+        .number()
+        .min(1)
+        .max(50)
+        .default(20)
+        .describe("Max number of activities to return (default: 20)"),
+      pageNumber: z
+        .number()
+        .min(1)
+        .default(1)
+        .describe("Page number for pagination (default: 1)"),
+    },
+    async ({ days, size, pageNumber }) => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) throw new Error("Not authenticated. Please login first.");
+        const { activities, total } = await queryActivities(auth, {
+          days,
+          size,
+          pageNumber,
+        });
+
+        if (activities.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Nenhuma atividade encontrada nos últimos ${days} dias.`,
+              },
+            ],
+          };
+        }
+
+        const lines: string[] = [
+          `📊 Atividades recentes (${activities.length} de ${total} nos últimos ${days} dias):`,
+          "",
+        ];
+
+        for (const act of activities) {
+          const sport = activityModeName(act.mode);
+          const date = fmtDate(act.startTime);
+          const dur = fmtDuration(act.totalTime);
+          const parts: string[] = [];
+
+          if (act.distance > 0) {
+            parts.push(`${(act.distance / 1000).toFixed(2)} km`);
+          }
+          parts.push(dur);
+          if (act.avgHr > 0) parts.push(`FC avg: ${act.avgHr} bpm`);
+          if (act.avgSpeed > 0 && act.distance > 0) {
+            // pace in min/km
+            const paceSecPerKm = (act.totalTime / (act.distance / 1000));
+            const pm = Math.floor(paceSecPerKm / 60);
+            const ps = Math.round(paceSecPerKm % 60);
+            parts.push(`Pace: ${pm}:${String(ps).padStart(2, "0")}/km`);
+          }
+          if (act.calorie > 0) parts.push(`${Math.round(act.calorie / 1000)} kcal`);
+          if (act.trainingLoad > 0) parts.push(`Load: ${act.trainingLoad}`);
+
+          lines.push(`• [${date}] **${act.name}** (${sport})`);
+          lines.push(`  ${parts.join(" | ")}`);
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: lines.join("\n"),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Falha ao listar atividades: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
           isError: true,

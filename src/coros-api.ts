@@ -768,3 +768,136 @@ export async function queryWorkouts(
   };
   return apiPost(auth, "/training/program/query", body);
 }
+
+// --- Activities ---
+
+export interface ActivityQueryOptions {
+  /** Days to look back from today (default: 30) */
+  days?: number;
+  /** Page size (default: 20) */
+  size?: number;
+  /** Page number starting at 1 (default: 1) */
+  pageNumber?: number;
+  /** Sport mode filter, empty = all */
+  modeList?: string;
+}
+
+export interface Activity {
+  name: string;
+  /** YYYYMMDD integer – use startTime for a real Unix timestamp */
+  date: number;
+  /** Unix timestamp in seconds */
+  startTime: number;
+  endTime: number;
+  mode: number;
+  sportType: number;
+  /** Distance in meters */
+  distance: number;
+  /** Duration in seconds */
+  totalTime: number;
+  /** Calories × 1000 (divide by 1000 for kcal) */
+  calorie: number;
+  avgHr: number;
+  avgSpeed: number;
+  ascent: number;
+  trainingLoad: number;
+  device: string;
+}
+
+const ACTIVITY_MODE_NAMES: Record<number, string> = {
+  0: "Outdoor Run",
+  1: "Indoor Run",
+  8: "Run",
+  9: "Trail Run",
+  10: "Track Run",
+  11: "Hike",
+  12: "Walk",
+  13: "Bike",
+  14: "Indoor Bike",
+  15: "Mountain Bike",
+  16: "Pool Swim",
+  17: "Open Water",
+  18: "Triathlon",
+  19: "Ski",
+  20: "Snowboard",
+  21: "Rowing",
+  22: "Strength",
+  23: "Gym Cardio",
+  24: "HIIT",
+  25: "Yoga",
+  26: "Pilates",
+  28: "Climb",
+  29: "Indoor Climb",
+  30: "Surf",
+  31: "Tennis",
+  32: "Table Tennis",
+  33: "Badminton",
+  34: "Basketball",
+  35: "Soccer",
+  36: "Volleyball",
+  37: "Golf",
+  38: "Boxing",
+  100: "Other",
+};
+
+export function activityModeName(mode: number): string {
+  return ACTIVITY_MODE_NAMES[mode] ?? `Mode ${mode}`;
+}
+
+/** ts = Unix timestamp in seconds (use activity.startTime, not activity.date) */
+function fmtDate(ts: number): string {
+  return new Date(ts * 1000).toLocaleDateString("pt-BR");
+}
+
+function fmtDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
+  return `${m}m${String(s).padStart(2, "0")}s`;
+}
+
+export async function queryActivities(
+  auth: AuthData,
+  options: ActivityQueryOptions = {}
+): Promise<{ activities: Activity[]; total: number }> {
+  const today = new Date();
+  const start = new Date(today);
+  start.setDate(today.getDate() - (options.days ?? 30));
+
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+
+  const params = new URLSearchParams({
+    size: String(options.size ?? 20),
+    pageNumber: String(options.pageNumber ?? 1),
+    startDay: fmt(start),
+    endDay: fmt(today),
+    modeList: options.modeList ?? "",
+  });
+
+  const baseUrl = REGION_URLS[auth.region];
+  const res = await fetch(`${baseUrl}/activity/query?${params}`, {
+    headers: {
+      accesstoken: auth.accessToken,
+      yfheader: JSON.stringify({ userId: auth.userId }),
+    },
+  });
+
+  const data = (await res.json()) as {
+    result: string;
+    message?: string;
+    data?: { dataList: Activity[]; count: number; totalPage: number };
+  };
+
+  if (data.result !== "0000") {
+    throw new Error(`COROS API error (/activity/query): ${data.message || data.result}`);
+  }
+
+  return {
+    activities: data.data?.dataList ?? [],
+    total: data.data?.count ?? 0,
+  };
+}
+
+export { fmtDate, fmtDuration, activityModeName as fmtMode };
