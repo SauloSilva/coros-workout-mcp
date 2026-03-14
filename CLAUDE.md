@@ -43,6 +43,33 @@ User provides exercise names + overrides → `findByName()` validates against ca
 
 `data/exercises.json` contains ~383 exercises bundled with the server. The `update_exercises` tool refreshes it from the COROS API + i18n CDN strings. Name resolution order: i18n → existing catalog fallback → raw code name (e.g. "T1004"). Only ~100 exercises have i18n coverage.
 
+## Running Workouts — Training Zones
+
+COROS snaps pace percentages to fixed zone boundaries. **Always use `paceZone` (1–5) in `create_running_workout` instead of raw `paceLowPercent`/`paceHighPercent`** when targeting a zone.
+
+| Zone | Label       | % LTSP    | Description                              |
+|------|-------------|-----------|------------------------------------------|
+| 1    | Easy        | 79–86%    | Regenerativo, volume leve, recuperação   |
+| 2    | Aerobic     | 87–92%    | Base aeróbica, volume progressivo        |
+| 3    | Tempo       | 93–97%    | Limiar aeróbico, corrida de tempo        |
+| 4    | Threshold   | 98–102%   | Limiar anaeróbico, corrida de ritmo      |
+| 5    | VO2max      | 103–112%  | Intervalos curtos/médios, VO2max         |
+
+These boundaries were confirmed by inspecting native COROS workouts via the raw API. Any `paceLowPercent ≤ 86` snaps to Zone 1; `87+` correctly triggers Zone 2, etc.
+
+Example usage:
+```json
+{ "type": "active", "durationType": "distance", "durationValue": 6000, "paceZone": 2 }
+```
+
+## Running Workout — Group Structure
+
+COROS uses a nested step format for intervals:
+- Container step: `exerciseType=0, isGroup=true, sets=N, sportType=0`  
+- Child steps: `exerciseType=2, sportType=1, groupId=<container.id>`
+- `sortNo` spacing: `BLOCK_SPACING=16777216` for top-level, `CHILD_SPACING=65536` for children
+- Children inside groups use `intensityMultiplier=1000` (ms/km), top-level use `0` (s/km)
+
 ## Reference Material
 
 The parent repo (`../`) contains research files useful for debugging API issues: captured curl commands (`create-workout-request-all.txt`), raw API responses (`strength-exercises.json`), and extracted i18n strings (`en-US.prod.js`).
