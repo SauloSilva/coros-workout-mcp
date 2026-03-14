@@ -87,26 +87,31 @@ function isTokenFresh(auth: AuthData): boolean {
 
 /** Get valid auth from memory cache, stored file, or env vars (with login deduplication) */
 export async function getValidAuth(): Promise<AuthData | null> {
-  // 1. Memory cache — fastest path, shared across all concurrent calls
-  if (memoryAuth && isTokenFresh(memoryAuth)) return memoryAuth;
+  const email = process.env.COROS_EMAIL;
+  const password = process.env.COROS_PASSWORD;
+  const rawRegion = process.env.COROS_REGION?.toLowerCase();
+  const envRegion: Region = rawRegion === "us" || rawRegion === "eu" ? rawRegion : "eu";
 
-  // 2. File cache — persists across process restarts
+  // 1. Memory cache — fastest path, but only if region matches env
+  if (memoryAuth && isTokenFresh(memoryAuth)) {
+    if (!rawRegion || memoryAuth.region === envRegion) return memoryAuth;
+  }
+
+  // 2. File cache — only if region matches env var (prevents stale cross-region tokens)
   const stored = loadAuth();
   if (stored && isTokenFresh(stored)) {
-    memoryAuth = stored;
-    return memoryAuth;
+    if (!rawRegion || stored.region === envRegion) {
+      memoryAuth = stored;
+      return memoryAuth;
+    }
+    // Region mismatch: stored token is for wrong region, must re-login
   }
 
   // 3. Re-authenticate via env vars — deduplicated so only ONE login happens
   //    even if multiple tool calls arrive simultaneously
-  const email = process.env.COROS_EMAIL;
-  const password = process.env.COROS_PASSWORD;
-  const rawRegion = process.env.COROS_REGION?.toLowerCase();
-  const region: Region = rawRegion === "us" || rawRegion === "eu" ? rawRegion : "eu";
-
   if (email && password) {
     if (!loginPromise) {
-      loginPromise = login(email, password, region).finally(() => {
+      loginPromise = login(email, password, envRegion).finally(() => {
         loginPromise = null;
       });
     }
@@ -114,7 +119,7 @@ export async function getValidAuth(): Promise<AuthData | null> {
     return memoryAuth;
   }
 
-  // 4. Last resort: stale stored token
+  // 4. Last resort: stale stored token (no env credentials available)
   if (stored) return stored;
 
   return null;
