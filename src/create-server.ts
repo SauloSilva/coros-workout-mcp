@@ -19,6 +19,7 @@ import {
   removeScheduledWorkout,
   getUserProfile,
   queryDashboard,
+  queryDashboardSummary,
   activityModeName,
   fmtDate,
   fmtDuration,
@@ -1005,6 +1006,85 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
           }
         } catch {
           // dashboard data is optional — don't fail the whole tool
+        }
+
+        // ── Dashboard Summary: fitness scores, recovery, PRs, predictions ─────
+        try {
+          const ds = await queryDashboardSummary(auth);
+
+          const fmtScore = (val: number, delta: number) => {
+            const sign = delta > 0 ? "▲" : delta < 0 ? "▼" : "─";
+            const d = delta !== 0 ? ` ${sign}${Math.abs(delta).toFixed(1)}` : "";
+            return `${val.toFixed(1)}${d}`;
+          };
+
+          // Recovery
+          lines.push("━━━ Recuperação ━━━");
+          const recIcon = ds.recoveryPct >= 90 ? "🟢" : ds.recoveryPct >= 70 ? "🟡" : "🔴";
+          lines.push(`  ${recIcon} ${ds.recoveryPct}% recuperado`);
+          if (ds.fullRecoveryHours > 0)
+            lines.push(`  ⏳ Recuperação total em: ~${ds.fullRecoveryHours}h`);
+          lines.push("");
+
+          // Fitness scores
+          lines.push("━━━ Scores de Fitness ━━━");
+          if (ds.aerobicEnduranceScore > 0)
+            lines.push(`  🫁 Resistência aeróbica:   ${fmtScore(ds.aerobicEnduranceScore, ds.aerobicEnduranceScoreChange)}`);
+          if (ds.anaerobicEnduranceScore > 0)
+            lines.push(`  ⚡ Resistência anaeróbica: ${fmtScore(ds.anaerobicEnduranceScore, ds.anaerobicEnduranceScoreChange)}`);
+          if (ds.anaerobicCapacityScore > 0)
+            lines.push(`  💥 Capacidade anaeróbica:  ${fmtScore(ds.anaerobicCapacityScore, ds.anaerobicCapacityScoreChange)}`);
+          if (ds.lactateThresholdCapacityScore > 0)
+            lines.push(`  🏃 Cap. limiar lático:     ${fmtScore(ds.lactateThresholdCapacityScore, ds.lactateThresholdCapacityScoreChange)}`);
+          if (ds.totalActivities > 0)
+            lines.push(`  📊 Total de atividades:    ${ds.totalActivities}`);
+          lines.push("");
+
+          // Personal records
+          const PR_LABEL: Record<number, string> = {
+            2: "Meia Maratona (21 km)",
+            3: "15 km",
+            4: "10 km",
+            5: "5 km",
+            6: "3 km",
+            7: "1 km",
+            8: "1 milha",
+            9: "2 milhas",
+            10: "3 milhas",
+            11: "5 milhas",
+            12: "10 milhas",
+          };
+          if (ds.personalRecords.length > 0) {
+            lines.push("━━━ Recordes Pessoais (all-time) ━━━");
+            for (const pr of ds.personalRecords) {
+              const label = PR_LABEL[pr.type] ?? `Tipo ${pr.type}`;
+              const time = fmtDuration(pr.record);
+              const pace = pr.distance > 0 ? ` · Pace: ${fmtPace(Math.round(pr.record / (pr.distance / 1000)))}` : "";
+              const d = String(pr.happenDay);
+              const day = `${d.slice(6, 8)}/${d.slice(4, 6)}/${d.slice(0, 4)}`;
+              lines.push(`  🏅 ${label}: ${time}${pace} (${pr.site} — ${day})`);
+            }
+            lines.push("");
+          }
+
+          // Race time predictions
+          const PREDICTION_LABEL: Record<number, string> = {
+            1: "Endurance longa (~10km+)",
+            2: "Resistência (~5km)",
+            4: "Limiar (~3km)",
+            5: "Velocidade (~1km)",
+          };
+          if (ds.runScorePredictions.length > 0) {
+            lines.push("━━━ Previsão de Performance ━━━");
+            for (const p of ds.runScorePredictions) {
+              const label = PREDICTION_LABEL[p.type] ?? `Tipo ${p.type}`;
+              const pace = p.avgPace > 0 ? `${fmtPace(p.avgPace)}/km` : "–";
+              const dur = p.duration > 0 ? ` · ${fmtDuration(p.duration)}` : "";
+              lines.push(`  📈 ${label}: ${pace}${dur}`);
+            }
+          }
+        } catch {
+          // fitness scores are optional — don't fail the whole tool
         }
 
         return {

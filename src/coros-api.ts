@@ -1653,6 +1653,88 @@ export async function queryDashboard(auth: AuthData): Promise<DashboardData> {
   };
 }
 
+// ─── Dashboard Summary (fitness scores, PRs, predictions) ───────────────────
+
+export interface PersonalRecord {
+  type: number;      // distance code (3=15km, 4=10km, 5=5km, 6=3km, 7=1km, 8=1mi, ...)
+  record: number;    // seconds (duration PR) or s/km (pace PR)
+  distance: number;  // meters
+  site: string;      // activity name where PR was set
+  happenDay: number; // YYYYMMDD
+}
+
+export interface RunScorePrediction {
+  type: number;   // 1=long endurance, 2=medium, 4=threshold, 5=speed
+  avgPace: number; // s/km
+  duration: number; // seconds
+}
+
+export interface DashboardSummaryData {
+  aerobicEnduranceScore: number;
+  aerobicEnduranceScoreChange: number;
+  anaerobicCapacityScore: number;
+  anaerobicCapacityScoreChange: number;
+  anaerobicEnduranceScore: number;
+  anaerobicEnduranceScoreChange: number;
+  lactateThresholdCapacityScore: number;
+  lactateThresholdCapacityScoreChange: number;
+  recoveryPct: number;
+  recoveryState: number;
+  fullRecoveryHours: number;
+  personalRecords: PersonalRecord[]; // all-time PRs sorted by distance
+  runScorePredictions: RunScorePrediction[];
+  totalActivities: number;
+}
+
+export async function queryDashboardSummary(auth: AuthData): Promise<DashboardSummaryData> {
+  const urls = [REGION_URLS[auth.region], REGION_URLS["us"]];
+  let raw: Record<string, unknown> | null = null;
+
+  for (const base of [...new Set(urls)]) {
+    const res = await fetch(`${base}/dashboard/query`, { headers: apiHeaders(auth) });
+    const json = await res.json() as { result: string; data?: Record<string, unknown> };
+    if (json.result === "0000" && json.data) {
+      raw = json.data;
+      break;
+    }
+  }
+
+  if (!raw) throw new Error("dashboard/query failed");
+
+  const si = raw.summaryInfo as Record<string, unknown> | undefined ?? {};
+  const sportDataSummary = raw.sportDataSummary as Record<string, unknown> | undefined ?? {};
+
+  // recordDetailList[3] = type 4 = all-time sorted (best PRs per distance)
+  const allRecordGroups = (si.recordDetailList as Array<{ type: number; recordList: PersonalRecord[] }> | undefined) ?? [];
+  const allTimeSorted = allRecordGroups.find((g) => g.type === 4);
+  const prs: PersonalRecord[] = (allTimeSorted?.recordList ?? []).filter(
+    (r) => r.distance > 0 && r.record > 0 && r.type >= 2 && r.type <= 12
+  );
+
+  const runScores = (si.runScoreList as Array<Record<string, unknown>> | undefined) ?? [];
+
+  return {
+    aerobicEnduranceScore: Number(si.aerobicEnduranceScore ?? 0),
+    aerobicEnduranceScoreChange: Number(si.aerobicEnduranceScoreChange ?? 0),
+    anaerobicCapacityScore: Number(si.anaerobicCapacityScore ?? 0),
+    anaerobicCapacityScoreChange: Number(si.anaerobicCapacityScoreChange ?? 0),
+    anaerobicEnduranceScore: Number(si.anaerobicEnduranceScore ?? 0),
+    anaerobicEnduranceScoreChange: Number(si.anaerobicEnduranceScoreChange ?? 0),
+    lactateThresholdCapacityScore: Number(si.lactateThresholdCapacityScore ?? 0),
+    lactateThresholdCapacityScoreChange: Number(si.lactateThresholdCapacityScoreChange ?? 0),
+    recoveryPct: Number(si.recoveryPct ?? 0),
+    recoveryState: Number(si.recoveryState ?? 0),
+    fullRecoveryHours: Number(si.fullRecoveryHours ?? 0),
+    personalRecords: prs,
+    runScorePredictions: runScores.map((r) => ({
+      type: Number(r.type ?? 0),
+      avgPace: Number(r.avgPace ?? 0),
+      duration: Number(r.duration ?? 0),
+    })),
+    totalActivities: Number(sportDataSummary.count ?? 0),
+  };
+}
+
 // ─── Schedule (Calendar) ────────────────────────────────────────────────────
 
 export interface ScheduleEntry {
