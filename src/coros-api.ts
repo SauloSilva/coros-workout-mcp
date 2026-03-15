@@ -1854,3 +1854,83 @@ export async function querySchedule(
 
   return { planName, entries };
 }
+
+// ── User Profile ──────────────────────────────────────────────────────────────
+
+export async function getUserProfile(
+  auth: AuthData
+): Promise<string> {
+  // /account/query only works on teamapi.coros.com (US global endpoint)
+  const urls = [REGION_URLS[auth.region], REGION_URLS["us"]];
+  let data: Record<string, unknown> | null = null;
+
+  for (const base of [...new Set(urls)]) {
+    const res = await fetch(`${base}/account/query?userId=${auth.userId}`, {
+      method: "GET",
+      headers: apiHeaders(auth),
+    });
+    const json = await res.json() as { result: string; data?: Record<string, unknown> };
+    if (json.result === "0000" && json.data) {
+      data = json.data;
+      break;
+    }
+  }
+
+  if (!data) {
+    throw new Error("Não foi possível obter os dados do perfil. Tente autenticar novamente.");
+  }
+
+  const fmtPace = (sPerKm: number) => {
+    if (!sPerKm || sPerKm <= 0) return "—";
+    const m = Math.floor(sPerKm / 60);
+    const s = sPerKm % 60;
+    return `${m}:${String(s).padStart(2, "0")}/km`;
+  };
+
+  const fmtBirthday = (b: number) => {
+    const s = String(b);
+    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  };
+
+  const z = data.zoneData as Record<string, unknown> | undefined ?? {};
+  const ltspZones = (z.ltspZone as Array<{ index: number; pace: number; ratio: number }> | undefined) ?? [];
+  const lthrZones = (z.lthrZone as Array<{ index: number; hr: number; ratio: number }> | undefined) ?? [];
+
+  const zoneLabels = ["Z1 Easy", "Z2 Aeróbico", "Z3 Tempo", "Z4 Limiar", "Z5 VO2max"];
+
+  const ltspRows = ltspZones.slice(0, 5).map((z, i) =>
+    `  ${zoneLabels[i] ?? `Z${i + 1}`}: ${fmtPace(z.pace)} (${z.ratio}% LTSP)`
+  ).join("\n");
+
+  const lthrRows = lthrZones.slice(0, 5).map((z, i) =>
+    `  ${zoneLabels[i] ?? `Z${i + 1}`}: <${z.hr} bpm (${z.ratio}% LTHR)`
+  ).join("\n");
+
+  const sex = data.sex === 0 ? "Masculino" : "Feminino";
+  const birthday = data.birthday ? fmtBirthday(Number(data.birthday)) : "—";
+
+  return [
+    `👤 **Perfil: ${data.nickname ?? "—"}**`,
+    `📧 ${data.email ?? "—"}  |  ${sex}  |  Nascimento: ${birthday}`,
+    `📍 País: ${data.countryCode ?? "—"}`,
+    ``,
+    `📏 **Dados Físicos**`,
+    `  Altura: ${data.stature ?? "—"} cm`,
+    `  Peso:   ${data.weight ?? "—"} kg`,
+    ``,
+    `❤️ **Métricas Cardíacas**`,
+    `  FC Máx:   ${data.maxHr ?? z.maxHr ?? "—"} bpm`,
+    `  FC Repouso: ${data.rhr ?? z.rhr ?? "—"} bpm`,
+    `  LTHR (Limiar):  ${z.lthr ?? "—"} bpm`,
+    ``,
+    `🏃 **Métricas de Corrida**`,
+    `  LTSP (Pace limiar): ${fmtPace(Number(z.ltsp ?? 0))}`,
+    `  FTP (Ciclismo):     ${z.ftp ?? "—"} W`,
+    ``,
+    `🏃 **Zonas de Pace (LTSP)**`,
+    ltspRows || "  Não disponível",
+    ``,
+    `❤️ **Zonas de FC (LTHR)**`,
+    lthrRows || "  Não disponível",
+  ].join("\n");
+}

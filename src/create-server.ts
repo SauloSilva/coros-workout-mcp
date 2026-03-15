@@ -17,6 +17,7 @@ import {
   queryScheduleRaw,
   scheduleWorkout,
   removeScheduledWorkout,
+  getUserProfile,
   activityModeName,
   fmtDate,
   fmtDuration,
@@ -1455,6 +1456,32 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
       } catch (error) {
         return {
           content: [{ type: "text" as const, text: `Falha ao remover treino: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ── get_user_profile ──────────────────────────────────────────────────────
+  server.tool(
+    "get_user_profile",
+    "Get user profile data from COROS: name, height, weight, max HR, resting HR, LTSP, LTHR, FTP and training zones.",
+    {},
+    async () => {
+      try {
+        const auth = await getValidAuth();
+        if (!auth) {
+          return {
+            content: [{ type: "text" as const, text: "Not authenticated. Use authenticate_coros first." }],
+            isError: true,
+          };
+        }
+
+        const profile = await getUserProfile(auth);
+        return { content: [{ type: "text" as const, text: profile }] };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Falha ao buscar perfil: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         };
       }
