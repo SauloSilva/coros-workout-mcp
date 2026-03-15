@@ -18,6 +18,7 @@ import {
   scheduleWorkout,
   removeScheduledWorkout,
   getUserProfile,
+  queryDashboard,
   activityModeName,
   fmtDate,
   fmtDuration,
@@ -947,6 +948,63 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
               `  ${sport}: ${s.count}x | ${fmtDuration(s.duration)}${dist}${pace} | FC: ${s.avgHeartRate} bpm`
             );
           }
+          lines.push("");
+        }
+
+        // ── Dashboard: weekly progress + recent activities + upcoming ─────────
+        try {
+          const dash = await queryDashboard(auth);
+
+          // Weekly target progress
+          const fmtPct = (pct: number) => {
+            const icon = pct >= 100 ? "✅" : pct >= 80 ? "🟡" : "🔴";
+            return `${icon} ${pct.toFixed(0)}%`;
+          };
+          lines.push("━━━ Progresso Semanal (vs Meta) ━━━");
+          if (dash.distanceRecord.totalTarget > 0) {
+            const km = (dash.distanceRecord.totalValue / 1000).toFixed(1);
+            const tgt = (dash.distanceRecord.totalTarget / 1000).toFixed(1);
+            lines.push(`  📏 Distância: ${km} km / ${tgt} km  ${fmtPct(dash.distanceRecord.percentage)}`);
+          }
+          if (dash.durationRecord.totalTarget > 0) {
+            lines.push(`  ⏱️ Duração:   ${fmtDuration(dash.durationRecord.totalValue)} / ${fmtDuration(dash.durationRecord.totalTarget)}  ${fmtPct(dash.durationRecord.percentage)}`);
+          }
+          if (dash.tlRecord.totalTarget > 0) {
+            lines.push(`  ⚡ Carga TL:  ${dash.tlRecord.totalValue} / ${dash.tlRecord.totalTarget}  ${fmtPct(dash.tlRecord.percentage)}`);
+          }
+          lines.push("");
+
+          // Recent activities this week
+          if (dash.activities.length > 0) {
+            lines.push("━━━ Atividades desta Semana ━━━");
+            for (const a of dash.activities.slice(0, 7)) {
+              const d = String(a.happenDay);
+              const day = `${d.slice(6, 8)}/${d.slice(4, 6)}`;
+              const sport = activityModeName(a.mode);
+              const dist = a.distance > 0 ? ` · ${(a.distance / 1000).toFixed(1)} km` : "";
+              const pace = a.avgPace > 0 ? ` · ${fmtPace(a.avgPace)}` : "";
+              const hr = a.avgHeartRate > 0 ? ` · ${a.avgHeartRate} bpm` : "";
+              const tl = a.trainingLoad > 0 ? ` · TL ${a.trainingLoad}` : "";
+              lines.push(`  ${day} ${sport}${dist}${pace}${hr}${tl}`);
+            }
+            lines.push("");
+          }
+
+          // Upcoming planned workouts
+          const upcoming = dash.targets.filter((t) => t.happenDay >= Number(
+            new Date().toISOString().slice(0, 10).replace(/-/g, "")
+          ));
+          if (upcoming.length > 0) {
+            lines.push("━━━ Próximos Treinos Planejados ━━━");
+            for (const t of upcoming.slice(0, 5)) {
+              const d = String(t.happenDay);
+              const day = `${d.slice(6, 8)}/${d.slice(4, 6)}`;
+              const tl = t.estimatedValue > 0 ? ` (TL est: ${t.estimatedValue})` : "";
+              lines.push(`  📋 ${day}: ${t.name}${tl}`);
+            }
+          }
+        } catch {
+          // dashboard data is optional — don't fail the whole tool
         }
 
         return {

@@ -1570,6 +1570,89 @@ export async function queryAnalytics(
   };
 }
 
+export interface DashboardWeekRecord {
+  totalValue: number;
+  totalTarget: number;
+  percentage: number;
+}
+
+export interface DashboardActivity {
+  happenDay: number;
+  distance: number;    // meters
+  duration: number;    // seconds
+  avgPace: number;     // s/km
+  avgHeartRate: number;
+  trainingLoad: number;
+  sportType: number;
+  mode: number;
+}
+
+export interface DashboardTarget {
+  happenDay: number;
+  name: string;
+  estimatedValue: number; // training load estimate
+}
+
+export interface DashboardData {
+  distanceRecord: DashboardWeekRecord;
+  durationRecord: DashboardWeekRecord;
+  tlRecord: DashboardWeekRecord;
+  activities: DashboardActivity[];
+  targets: DashboardTarget[];
+}
+
+export async function queryDashboard(auth: AuthData): Promise<DashboardData> {
+  // dashboard/detail/query only works on the US global endpoint
+  const urls = [REGION_URLS[auth.region], REGION_URLS["us"]];
+  let raw: Record<string, unknown> | null = null;
+
+  for (const base of [...new Set(urls)]) {
+    const res = await fetch(`${base}/dashboard/detail/query`, {
+      headers: apiHeaders(auth),
+    });
+    const json = await res.json() as { result: string; data?: Record<string, unknown> };
+    if (json.result === "0000" && json.data) {
+      raw = json.data;
+      break;
+    }
+  }
+
+  if (!raw) {
+    throw new Error("Não foi possível obter dados do dashboard. Tente autenticar novamente.");
+  }
+
+  const weekRec = raw.currentWeekRecord as Record<string, { totalValue: number; totalTarget: number; percentage: number }> | undefined ?? {};
+  const actList = (raw.sportDataList as Array<Record<string, unknown>> | undefined) ?? [];
+  const tgtList = (raw.targetList as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const toRecord = (key: string): DashboardWeekRecord => ({
+    totalValue: weekRec[key]?.totalValue ?? 0,
+    totalTarget: weekRec[key]?.totalTarget ?? 0,
+    percentage: weekRec[key]?.percentage ?? 0,
+  });
+
+  return {
+    distanceRecord: toRecord("distanceRecord"),
+    durationRecord: toRecord("durationRecord"),
+    tlRecord: toRecord("tlRecord"),
+    activities: actList.map((a) => ({
+      happenDay: Number(a.happenDay ?? 0),
+      distance: Number(a.distance ?? 0),
+      duration: Number(a.duration ?? 0),
+      avgPace: Number(a.avgPace ?? 0),
+      avgHeartRate: Number(a.avgHeartRate ?? 0),
+      trainingLoad: Number(a.trainingLoad ?? 0),
+      sportType: Number(a.sportType ?? 0),
+      mode: Number(a.mode ?? 0),
+    })),
+    targets: tgtList.map((t) => ({
+      happenDay: Number(t.happenDay ?? 0),
+      name: String(t.name ?? ""),
+      estimatedValue: Number(t.estimatedValue ?? 0),
+    })),
+  };
+}
+
 // ─── Schedule (Calendar) ────────────────────────────────────────────────────
 
 export interface ScheduleEntry {
