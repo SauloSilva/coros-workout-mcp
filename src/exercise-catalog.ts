@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CatalogExercise } from "./types.js";
+import { MuscleCode, PartCode, EquipmentCode } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -103,23 +104,46 @@ export function searchExercises(filters: SearchFilters): CatalogExercise[] {
 
   if (filters.muscle) {
     const muscle = filters.muscle.toLowerCase();
+    // Also match by numeric muscle codes for unmapped muscleText values
+    const matchingMuscleCodes = (
+      Object.entries(MuscleCode) as [string, string][]
+    )
+      .filter(([_, name]) => name.toLowerCase().includes(muscle))
+      .map(([code]) => Number(code));
+
     results = results.filter((e) => {
-      const primary = e.muscleText.toLowerCase();
-      const secondary = e.secondaryMuscleText.toLowerCase();
-      return primary.includes(muscle) || secondary.includes(muscle);
+      if (e.muscleText.toLowerCase().includes(muscle)) return true;
+      if (e.secondaryMuscleText.toLowerCase().includes(muscle)) return true;
+      return e.muscle.some((m) => matchingMuscleCodes.includes(m));
     });
   }
 
   if (filters.bodyPart) {
     const part = filters.bodyPart.toLowerCase();
-    results = results.filter((e) => e.partText.toLowerCase().includes(part));
+    // Match by numeric part codes — handles exercises with unresolved partText (e.g. "1")
+    const matchingPartCodes = (Object.entries(PartCode) as [string, string][])
+      .filter(([_, name]) => name.toLowerCase().includes(part))
+      .map(([code]) => Number(code));
+
+    results = results.filter((e) => {
+      if (e.partText.toLowerCase().includes(part)) return true;
+      return e.part.some((p) => matchingPartCodes.includes(p));
+    });
   }
 
   if (filters.equipment) {
     const equip = filters.equipment.toLowerCase();
-    results = results.filter((e) =>
-      e.equipmentText.toLowerCase().includes(equip)
-    );
+    // Match by numeric equipment codes — handles exercises with unresolved equipmentText (e.g. "16")
+    const matchingEquipCodes = (
+      Object.entries(EquipmentCode) as [string, string][]
+    )
+      .filter(([_, name]) => name.toLowerCase().includes(equip))
+      .map(([code]) => Number(code));
+
+    results = results.filter((e) => {
+      if (e.equipmentText.toLowerCase().includes(equip)) return true;
+      return e.equipment.some((eq) => matchingEquipCodes.includes(eq));
+    });
   }
 
   return results;

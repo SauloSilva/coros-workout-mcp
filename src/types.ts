@@ -20,6 +20,7 @@ export const MuscleCode = {
 
 export const PartCode = {
   0: "Whole Body",
+  1: "Shoulders",
   2: "Chest",
   3: "Back",
   4: "Shoulders",
@@ -40,6 +41,9 @@ export const EquipmentCode = {
   9: "Medicine Ball",
   10: "Bench",
   11: "Kettlebell",
+  12: "Hangboard",
+  13: "Rowing Machine",
+  16: "Battle Rope",
 } as const;
 
 export const TargetTypeCode = {
