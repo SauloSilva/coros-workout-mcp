@@ -621,6 +621,13 @@ export function createCorosServer(): McpServer {
       .min(0)
       .optional()
       .describe("Rest time in seconds between repeat sets (default: 0)"),
+    restPaceZone: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .optional()
+      .describe("Pace zone (1-5) for the recovery segment between repetitions. When set, the rest step gets a targeted pace instead of 'open'. Use zone 1 for easy jog, zone 2 for aerobic. Perfect for 'forte e fraco' workouts."),
     paceLowPercent: z
       .number()
       .int()
@@ -703,6 +710,7 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
             hrHighPercent: s.hrHighPercent,
             repeat: s.repeat,
             repeatRestSeconds: s.repeatRestSeconds,
+            restPaceZone: s.restPaceZone,
           };
         });
 

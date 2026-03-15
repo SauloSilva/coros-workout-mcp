@@ -586,6 +586,12 @@ export interface RunStep {
   repeat?: number;
   /** Rest time in seconds between repeat sets (default: 0) */
   repeatRestSeconds?: number;
+  /**
+   * Pace zone (1-5) for the recovery segment between repetitions.
+   * When set, the rest step gets a pace target instead of "open".
+   * Use zone 1 for easy recovery jog, zone 2 for aerobic.
+   */
+  restPaceZone?: number;
 }
 
 // exerciseType codes confirmed from COROS API (via /training/program/calculate response):
@@ -882,8 +888,50 @@ function buildRunningPayload(
       // Child 1: the interval step (intensity in ms/km units since isInGroup=true)
       exercises.push(buildRunStep(step, blockSortNo + CHILD_SPACING, containerId, ltspMs, true));
 
-      // Child 2: recovery jog (if rest specified and time-based)
-      if (restSec > 0 && step.durationType !== "distance") {
+      // Child 2: recovery jog (always time-based, regardless of interval durationType)
+      if (restSec > 0) {
+        // Build pace intensity for rest if a zone is specified (forte e fraco style)
+        let restIntensity: Record<string, unknown> = {
+          intensityType: 0,
+          intensityValue: 0,
+          intensityValueExtend: 0,
+          intensityPercent: 0,
+          intensityPercentExtend: 0,
+          intensityMultiplier: 0,
+          intensityDisplayUnit: 0,
+          intensityCustom: 0,
+          hrType: 0,
+          isIntensityPercent: false,
+        };
+
+        if (step.restPaceZone != null && ltspMs != null) {
+          // Map restPaceZone (1-5) to exact COROS zone % boundaries
+          const REST_ZONE_BOUNDS: Record<number, { low: number; high: number }> = {
+            1: { low: 79,  high: 86  },
+            2: { low: 87,  high: 92  },
+            3: { low: 93,  high: 97  },
+            4: { low: 98,  high: 102 },
+            5: { low: 103, high: 112 },
+          };
+          const zb = REST_ZONE_BOUNDS[step.restPaceZone];
+          if (zb) {
+            const fasterMs = Math.round(ltspMs / (zb.high / 100));
+            const slowerMs = Math.round(ltspMs / (zb.low / 100));
+            restIntensity = {
+              intensityType: 3,
+              intensityValue: fasterMs,       // ms/km (isInGroup=true → multiplier=1000)
+              intensityValueExtend: slowerMs,
+              intensityPercent: zb.low * 1000,
+              intensityPercentExtend: zb.high * 1000,
+              intensityMultiplier: 1000,
+              intensityDisplayUnit: 1,
+              intensityCustom: step.restPaceZone,
+              hrType: 0,
+              isIntensityPercent: true,
+            };
+          }
+        }
+
         exercises.push({
           id: String(blockSortNo + CHILD_SPACING * 2),
           name: "T3001",
@@ -897,16 +945,7 @@ function buildRunningPayload(
           targetType: 2,        // time
           targetValue: restSec,
           targetDisplayUnit: 0,
-          intensityType: 0,
-          intensityValue: 0,
-          intensityValueExtend: 0,
-          intensityPercent: 0,
-          intensityPercentExtend: 0,
-          intensityMultiplier: 0,
-          intensityDisplayUnit: 0,
-          intensityCustom: 0,
-          hrType: 0,
-          isIntensityPercent: false,
+          ...restIntensity,
           restValue: 0,
           restType: 3,
           defaultOrder: 0,
