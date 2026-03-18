@@ -9,7 +9,7 @@
         "COROS_REGION": "us",
         "NODE_TLS_REJECT_UNAUTHORIZED": "0",
         "COROS_LTSP": "241",
-        "COROS_LTSP_UNIT": "s_per_km_v6_pacezone"
+        "COROS_LTSP_UNIT": "s_per_km_v8_rpe"
       }
     }
   }

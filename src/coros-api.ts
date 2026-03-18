@@ -1193,6 +1193,7 @@ const ACTIVITY_MODE_NAMES: Record<number, string> = {
   37: "Golf",
   38: "Boxing",
   100: "Other",
+  402: "Musculação",
 };
 
 export function activityModeName(mode: number): string {
@@ -1381,11 +1382,11 @@ export interface ActivityDetailFull {
 }
 
 const FEEL_LABELS: Record<number, string> = {
-  1: "😫 Muito difícil",
-  2: "😓 Difícil",
-  3: "😐 Normal",
-  4: "😊 Bem",
-  5: "🤩 Ótimo",
+  1: "🟢 Muito leve",
+  2: "🔵 Leve",
+  3: "🟡 Moderado",
+  4: "🟠 Difícil",
+  5: "🔴 Esforço máximo",
 };
 
 const ZONE_TYPE_LABELS: Record<number, string> = {

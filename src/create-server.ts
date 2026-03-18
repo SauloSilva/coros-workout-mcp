@@ -1153,9 +1153,9 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
         ];
 
         if (sportFeelInfo?.feelType && sportFeelInfo.feelType > 0) {
-          lines.push(`💬 Sensação: ${feelLabel(sportFeelInfo.feelType)}`);
+          lines.push(`💪 Esforço percebido: ${feelLabel(sportFeelInfo.feelType)}`);
         }
-        if (sportFeelInfo?.sportNote) lines.push(`📝 Nota: ${sportFeelInfo.sportNote}`);
+        if (sportFeelInfo?.sportNote) lines.push(`📝 Comentário: ${sportFeelInfo.sportNote}`);
         lines.push(``);
 
         // ── Resumo ────────────────────────────────────────────────────────────
