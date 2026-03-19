@@ -1239,16 +1239,26 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
           }
         }
 
-        // ── Laps por Km ───────────────────────────────────────────────────────
+        // ── Voltas ────────────────────────────────────────────────────────────
         const kmLapGroup = lapList.find((g) => g.lapDistance === 100000);
         if (kmLapGroup && kmLapGroup.lapItemList.length > 0) {
           const fastIdx = kmLapGroup.fastLapIndexList ?? [];
-          lines.push(`━━━ Laps por km ━━━`);
-          lines.push(`  Km | Pace      | FC  | Cadência | Potência | Subida`);
-          lines.push(`  ---|-----------|-----|----------|----------|-------`);
+          lines.push(`━━━ Voltas ━━━`);
+          lines.push(`  # | Dist    | Pace      | FC  | Cadência | Potência | Subida`);
+          lines.push(`  --|---------|-----------|-----|----------|----------|-------`);
+          let lapNum = 0;
           for (const lap of kmLapGroup.lapItemList) {
+            const lapDistKm = lap.distance / 100000;
+            if (lapDistKm < 0.1) continue; // skip tiny GPS fragments
+
+            lapNum++;
             const isFast = fastIdx.includes(lap.lapIndex);
-            const km = lap.distance > 0 ? (lap.distance / 100000).toFixed(2) : "–";
+
+            // Show distance in meters if < 1km, in km if >= 1km
+            const distStr = lapDistKm < 1.0
+              ? `${Math.round(lap.distance / 100)}m`
+              : `${lapDistKm.toFixed(2)}km`;
+
             const pace = lap.avgPace > 0 ? fmtPace(lap.avgPace) : "–";
             const hr = lap.avgHr > 0 ? `${lap.avgHr}` : "–";
             const cad = lap.avgCadence > 0 ? `${lap.avgCadence}` : "–";
@@ -1256,7 +1266,7 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
             const elev = lap.elevGain > 0 ? `+${lap.elevGain}m` : "–";
             const flag = isFast ? " ⚡" : "";
             lines.push(
-              `  ${String(lap.lapIndex).padStart(2)} | ${pace.padEnd(9)} | ${hr.padEnd(3)} | ${cad.padEnd(8)} | ${pow.padEnd(8)} | ${elev}${flag}`
+              `  ${String(lapNum).padStart(2)} | ${distStr.padEnd(7)} | ${pace.padEnd(9)} | ${hr.padEnd(3)} | ${cad.padEnd(8)} | ${pow.padEnd(8)} | ${elev}${flag}`
             );
           }
         }
