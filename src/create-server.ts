@@ -474,7 +474,7 @@ export function createCorosServer(): McpServer {
                   const targetType = rawEx.targetType as number;
                   const targetVal = rawEx.targetValue as number;
                   let dur: string;
-                  if (targetType === 0) dur = "aberto";
+                  if (targetType === 0 || targetType === 1) dur = "aberto";
                   else if (targetType === 2) {
                     dur = targetVal >= 60
                       ? `${Math.floor(targetVal / 60)}min${targetVal % 60 > 0 ? `${targetVal % 60}s` : ""}`

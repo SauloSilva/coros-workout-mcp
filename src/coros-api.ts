@@ -604,11 +604,12 @@ const RUN_EXERCISE_TYPE: Record<RunStepType, number> = {
   cooldown: 3,
 };
 
-// targetType codes confirmed from COROS API:
-// 0=open, 1=training_load, 2=time (seconds), 5=distance (centimeters)
+// targetType codes confirmed from native COROS Training Hub payloads:
+// 1=open (no duration target), 2=time (seconds), 5=distance (centimeters)
+// training_load code unconfirmed — native app uses 1 for open warmup/cooldown
 const RUN_DURATION_TYPE: Record<RunDurationType, number> = {
-  open: 0,
-  training_load: 1,
+  open: 1,
+  training_load: 1, // unconfirmed, same as open for now
   time: 2,
   distance: 5,
 };
