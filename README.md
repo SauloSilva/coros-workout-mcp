@@ -32,6 +32,16 @@ To use env var auth (avoids typing credentials in conversation):
 claude mcp add coros-workout -e COROS_EMAIL=you@example.com -e COROS_PASSWORD=yourpass -e COROS_REGION=eu -- node /path/to/coros-workout-mcp/dist/src/index.js
 ```
 
+### Dates and time zones
+
+Activity timestamps from COROS are UTC instants. This server formats dates, times, and API day ranges (`startDay` / `endDay`, schedule defaults, “today” for upcoming workouts) using an **IANA time zone**:
+
+1. `COROS_TIMEZONE` (recommended), e.g. `America/Sao_Paulo`
+2. `TZ`, if set to a valid IANA zone
+3. Otherwise `Intl`’s resolved system zone (often `UTC` in headless / Docker)
+
+If times look “one day off,” set `COROS_TIMEZONE` in the MCP `env` to match where you live or how you use the COROS calendar.
+
 ## Usage with Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -45,7 +55,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "env": {
         "COROS_EMAIL": "you@example.com",
         "COROS_PASSWORD": "yourpass",
-        "COROS_REGION": "eu"
+        "COROS_REGION": "eu",
+        "COROS_TIMEZONE": "America/Sao_Paulo"
       }
     }
   }

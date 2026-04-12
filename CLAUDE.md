@@ -18,13 +18,18 @@ Build output goes to `dist/` via `tsc`. The server entry point is `dist/src/inde
 
 To run a single test file: `npx vitest run src/__tests__/exercise-catalog.test.ts`
 
+## Dates / time zones
+
+Set **`COROS_TIMEZONE`** (IANA, e.g. `America/Sao_Paulo`) in the MCP process `env` so formatted activity times, `list_activities` / `list_workouts` dates, activity-query day windows, schedule defaults, and “today” for dashboard upcoming workouts match the user’s calendar. Resolution order: `COROS_TIMEZONE` → valid `TZ` → `Intl` system zone (often UTC in containers).
+
 ## Architecture
 
-**4 source files, clear separation:**
+**Core modules:**
 
-- `index.ts` — MCP server setup. Registers 6 tools (`authenticate_coros`, `check_coros_auth`, `search_exercises`, `create_workout`, `update_exercises`, `list_workouts`) using `@modelcontextprotocol/sdk`. STDIO transport only.
+- `index.ts` — MCP server setup. Registers tools (`authenticate_coros`, `check_coros_auth`, `search_exercises`, `create_workout`, `update_exercises`, `list_workouts`, …) using `@modelcontextprotocol/sdk`. STDIO transport only.
 - `coros-api.ts` — COROS API client + payload construction. Handles auth (MD5 password hashing, token storage at `~/.config/coros-workout-mcp/auth.json`), and the workout creation flow: `resolveExercises()` → `calculateWorkout()` (POST `/training/program/calculate`) → `addWorkout()` (POST `/training/program/add`). Also contains `buildCatalogFromRaw()` for the `update_exercises` tool.
 - `exercise-catalog.ts` — In-memory exercise search engine. Loads `data/exercises.json` lazily, provides `findByName()` (exact, case-insensitive), `searchExercises()` (fuzzy name + muscle/bodyPart/equipment filters). The catalog is the single source of truth for exercise names used in `create_workout`.
+- `timezone-utils.ts` — `getCorosTimeZone()`, `ymdInZone`, `shiftYmdCalendar`, `formatDatePtBr` / `formatTimePtBr` for consistent display and COROS `YYYYMMDD` ranges.
 - `types.ts` — All interfaces and enum maps. Numeric code → human-readable name mappings for muscles, body parts, equipment. Key types: `CatalogExercise` (bundled catalog), `ExercisePayload` (API payload), `ExerciseOverrides` (user input), `RawExercise` (API response).
 
 **Data flow for workout creation:**

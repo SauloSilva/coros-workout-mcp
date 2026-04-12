@@ -45,6 +45,14 @@ import {
 } from "./exercise-catalog.js";
 import { PartCode } from "./types.js";
 import type { Region } from "./types.js";
+import {
+  formatDatePtBr,
+  formatTimePtBr,
+  getCorosTimeZone,
+  shiftYmdCalendar,
+  weekMondayYmdFromYmd,
+  ymdInZone,
+} from "./timezone-utils.js";
 
 export function createCorosServer(): McpServer {
   const server = new McpServer({
@@ -413,7 +421,7 @@ export function createCorosServer(): McpServer {
           .map((w) => {
             const durationMin = Math.round((w.estimatedTime || w.duration || 0) / 60);
             const date = w.createTimestamp
-              ? new Date((w.createTimestamp as number) * 1000).toLocaleDateString("pt-BR")
+              ? formatDatePtBr(w.createTimestamp as number, getCorosTimeZone())
               : "";
             const dateStr = date ? ` | ${date}` : "";
             const isRunning = w.sportType === 1;
@@ -1000,9 +1008,8 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
           }
 
           // Upcoming planned workouts
-          const upcoming = dash.targets.filter((t) => t.happenDay >= Number(
-            new Date().toISOString().slice(0, 10).replace(/-/g, "")
-          ));
+          const todayYmd = Number(ymdInZone(new Date(), getCorosTimeZone()));
+          const upcoming = dash.targets.filter((t) => t.happenDay >= todayYmd);
           if (upcoming.length > 0) {
             lines.push("━━━ Próximos Treinos Planejados ━━━");
             for (const t of upcoming.slice(0, 5)) {
@@ -1142,9 +1149,10 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
         const totalSec = Math.floor(s.totalTime / 100);
         const distKm = s.distance / 100000; // cm → km
         const sport = activityModeName(basicAct.mode);
+        const tz = getCorosTimeZone();
         const date = fmtDate(startTs);
-        const startStr = new Date(startTs * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-        const endStr = new Date(endTs * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+        const startStr = formatTimePtBr(startTs, tz);
+        const endStr = formatTimePtBr(endTs, tz);
 
         const lines: string[] = [
           `🏃 **${s.name}**`,
@@ -1403,18 +1411,11 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
         const auth = await getValidAuth();
         if (!auth) throw new Error("Não autenticado. Use authenticate_coros primeiro.");
 
-        // Default: 30 days ago → 30 days ahead
-        const now = new Date();
-        const toYYYYMMDD = (d: Date) =>
-          `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-
-        const past = new Date(now);
-        past.setDate(past.getDate() - 30);
-        const future = new Date(now);
-        future.setDate(future.getDate() + 30);
-
-        const start = startDate ?? toYYYYMMDD(past);
-        const end = endDate ?? toYYYYMMDD(future);
+        // Default: 30 days ago → 30 days ahead (COROS_TIMEZONE calendar)
+        const tz = getCorosTimeZone();
+        const todayYmd = ymdInZone(new Date(), tz);
+        const start = startDate ?? shiftYmdCalendar(todayYmd, -30);
+        const end = endDate ?? shiftYmdCalendar(todayYmd, 30);
 
         const { planName, entries } = await querySchedule(start, end, auth);
 
@@ -1437,19 +1438,11 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
           return `${s.slice(6, 8)}/${s.slice(4, 6)}/${s.slice(0, 4)}`;
         };
 
-        // Group by week
+        // Group by week (UTC calendar week from happenDay; independent of server TZ)
         const weeks: Map<string, typeof entries> = new Map();
         for (const e of entries) {
-          const date = new Date(
-            Number(String(e.happenDay).slice(0, 4)),
-            Number(String(e.happenDay).slice(4, 6)) - 1,
-            Number(String(e.happenDay).slice(6, 8))
-          );
-          // Monday of the week
-          const day = date.getDay();
-          const monday = new Date(date);
-          monday.setDate(date.getDate() - ((day + 6) % 7));
-          const weekKey = toYYYYMMDD(monday);
+          const ymd = String(e.happenDay).padStart(8, "0");
+          const weekKey = weekMondayYmdFromYmd(ymd);
           if (!weeks.has(weekKey)) weeks.set(weekKey, []);
           weeks.get(weekKey)!.push(e);
         }
@@ -1460,14 +1453,8 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
         lines.push("");
 
         for (const [weekKey, weekEntries] of weeks) {
-          const wk = new Date(
-            Number(weekKey.slice(0, 4)),
-            Number(weekKey.slice(4, 6)) - 1,
-            Number(weekKey.slice(6, 8))
-          );
-          const sunday = new Date(wk);
-          sunday.setDate(wk.getDate() + 6);
-          lines.push(`━━━ Semana ${fmtDay(Number(toYYYYMMDD(wk)))} → ${fmtDay(Number(toYYYYMMDD(sunday)))} ━━━`);
+          const sundayYmd = shiftYmdCalendar(weekKey, 6);
+          lines.push(`━━━ Semana ${fmtDay(Number(weekKey))} → ${fmtDay(Number(sundayYmd))} ━━━`);
 
           for (const e of weekEntries) {
             const icon = statusIcon(e.executeStatus);

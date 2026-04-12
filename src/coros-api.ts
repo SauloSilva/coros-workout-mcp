@@ -18,6 +18,12 @@ import {
   EquipmentCode,
 } from "./types.js";
 import { findByName } from "./exercise-catalog.js";
+import {
+  formatDatePtBr,
+  getCorosTimeZone,
+  shiftYmdCalendar,
+  ymdInZone,
+} from "./timezone-utils.js";
 
 const CONFIG_DIR = resolve(homedir(), ".config", "coros-workout-mcp");
 const AUTH_FILE = resolve(CONFIG_DIR, "auth.json");
@@ -1203,7 +1209,7 @@ export function activityModeName(mode: number): string {
 
 /** ts = Unix timestamp in seconds (use activity.startTime, not activity.date) */
 function fmtDate(ts: number): string {
-  return new Date(ts * 1000).toLocaleDateString("pt-BR");
+  return formatDatePtBr(ts, getCorosTimeZone());
 }
 
 function fmtDuration(seconds: number): string {
@@ -1218,18 +1224,16 @@ export async function queryActivities(
   auth: AuthData,
   options: ActivityQueryOptions = {}
 ): Promise<{ activities: Activity[]; total: number }> {
-  const today = new Date();
-  const start = new Date(today);
-  start.setDate(today.getDate() - (options.days ?? 30));
-
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const tz = getCorosTimeZone();
+  const now = new Date();
+  const endDay = ymdInZone(now, tz);
+  const startDay = shiftYmdCalendar(endDay, -(options.days ?? 30));
 
   const params = new URLSearchParams({
     size: String(options.size ?? 20),
     pageNumber: String(options.pageNumber ?? 1),
-    startDay: fmt(start),
-    endDay: fmt(today),
+    startDay,
+    endDay,
     modeList: options.modeList ?? "",
   });
 
@@ -1844,14 +1848,13 @@ export async function scheduleWorkout(
   const program = detailData.data as Record<string, unknown>;
 
   // Step 2: query the current schedule to get maxIdInPlan
-  const now = new Date();
-  const past = new Date(now); past.setDate(now.getDate() - 90);
-  const future = new Date(now); future.setDate(now.getDate() + 90);
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const tz = getCorosTimeZone();
+  const todayYmd = ymdInZone(new Date(), tz);
+  const pastYmd = shiftYmdCalendar(todayYmd, -90);
+  const futureYmd = shiftYmdCalendar(todayYmd, 90);
 
   const schedRes = await fetch(
-    `${apiUrl}/training/schedule/query?startDate=${fmt(past)}&endDate=${fmt(future)}&supportRestExercise=1`,
+    `${apiUrl}/training/schedule/query?startDate=${pastYmd}&endDate=${futureYmd}&supportRestExercise=1`,
     { method: "GET", headers: apiHeaders(auth) }
   );
   const schedData = await schedRes.json() as {
@@ -1924,14 +1927,13 @@ export async function removeScheduledWorkout(
   const apiUrl = REGION_URLS[auth.region];
 
   // Query a wide schedule range to find the entity and its planId
-  const now = new Date();
-  const past = new Date(now); past.setDate(now.getDate() - 90);
-  const future = new Date(now); future.setDate(now.getDate() + 90);
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const tz = getCorosTimeZone();
+  const todayYmd = ymdInZone(new Date(), tz);
+  const pastYmd = shiftYmdCalendar(todayYmd, -90);
+  const futureYmd = shiftYmdCalendar(todayYmd, 90);
 
   const schedRes = await fetch(
-    `${apiUrl}/training/schedule/query?startDate=${fmt(past)}&endDate=${fmt(future)}&supportRestExercise=1`,
+    `${apiUrl}/training/schedule/query?startDate=${pastYmd}&endDate=${futureYmd}&supportRestExercise=1`,
     { method: "GET", headers: apiHeaders(auth) }
   );
   const schedData = await schedRes.json() as {
