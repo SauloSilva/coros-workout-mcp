@@ -818,6 +818,21 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
     }
   );
 
+  // --- inspect_activity_raw (debug tool) ---
+  server.tool(
+    "inspect_activity_raw",
+    "Returns raw JSON of activity detail API response (lapList, zoneList, summary) for debugging lap groups and interval segments.",
+    { labelId: z.string().describe("Activity ID (labelId) from list_activities") },
+    async ({ labelId }) => {
+      const auth = await getValidAuth();
+      if (!auth) return { content: [{ type: "text" as const, text: "Not authenticated." }], isError: true };
+      const basicAct = await queryActivityDetail(auth, labelId);
+      if (!basicAct) return { content: [{ type: "text" as const, text: `Activity ${labelId} not found.` }] };
+      const detail = await queryActivityDetailFull(auth, labelId, basicAct.sportType);
+      return { content: [{ type: "text" as const, text: JSON.stringify(detail, null, 2) }] };
+    }
+  );
+
   // --- get_training_metrics ---
   server.tool(
     "get_training_metrics",
@@ -1247,22 +1262,91 @@ IMPORTANT: Always use paceZone (1-5) instead of paceLowPercent/paceHighPercent w
           }
         }
 
-        // ── Voltas ────────────────────────────────────────────────────────────
-        const kmLapGroup = lapList.find((g) => g.lapDistance === 100000);
+        // ── Segmentos do Treino (structured laps) ────────────────────────────
+        // Group type 2 contains workout-structured splits (intervals, warm-up, cool-down)
+        const structuredGroup = lapList.find((g) => g.type === 2 && g.lapItemList.length > 0);
+        if (structuredGroup) {
+          const laps = structuredGroup.lapItemList;
+
+          // Detect interval segments: look for alternating short (<= 30s) / long (> 30s) patterns
+          const hasIntervals = laps.some((lap) => {
+            const durSec = Math.round((lap.endTimestamp - lap.startTimestamp) / 100);
+            return durSec > 0 && durSec <= 30;
+          });
+
+          if (hasIntervals) {
+            lines.push(`━━━ Segmentos do Treino ━━━`);
+            lines.push(`  # | Tipo        | Duração | Dist    | Pace      | FC  | Cadência | Potência`);
+            lines.push(`  --|-------------|---------|---------|-----------|-----|----------|--------`);
+
+            let segNum = 0;
+            let strideCount = 0;
+            for (const lap of laps) {
+              segNum++;
+              const durSec = Math.round((lap.endTimestamp - lap.startTimestamp) / 100);
+              const lapDistM = Math.round(lap.distance / 100);
+              const lapDistKm = lap.distance / 100000;
+
+              // Classify segment by duration heuristic
+              let label: string;
+              if (durSec <= 30) {
+                strideCount++;
+                label = `⚡ Stride ${strideCount}`;
+              } else if (durSec <= 90 && strideCount > 0 && lapDistKm < 0.5) {
+                label = `🔄 Recup.`;
+              } else if (segNum === 1 && lapDistKm < 1.5) {
+                label = `🟢 Aquec.`;
+              } else if (segNum >= laps.length - 2 && strideCount > 0) {
+                label = `🔵 Volta`;
+              } else {
+                label = `🏃 Corrida`;
+              }
+
+              const durStr = fmtDuration(durSec);
+              const distStr = lapDistKm < 1.0
+                ? `${lapDistM}m`
+                : `${lapDistKm.toFixed(2)}km`;
+              const pace = lap.avgPace > 0 ? fmtPace(lap.avgPace) : "–";
+              const hr = lap.avgHr > 0 ? `${lap.avgHr}` : "–";
+              const cad = lap.avgCadence > 0 ? `${lap.avgCadence}` : "–";
+              const pow = lap.avgPower > 0 ? `${lap.avgPower}W` : "–";
+
+              lines.push(
+                `  ${String(segNum).padStart(2)} | ${label.padEnd(11)} | ${durStr.padEnd(7)} | ${distStr.padEnd(7)} | ${pace.padEnd(9)} | ${hr.padEnd(3)} | ${cad.padEnd(8)} | ${pow}`
+              );
+            }
+
+            // Summary of intervals
+            const strideLaps = laps.filter((l) => Math.round((l.endTimestamp - l.startTimestamp) / 100) <= 30);
+            if (strideLaps.length > 0) {
+              const avgStridePace = strideLaps.reduce((sum, l) => sum + l.avgPace, 0) / strideLaps.length;
+              const avgStrideDist = strideLaps.reduce((sum, l) => sum + l.distance / 100, 0) / strideLaps.length;
+              const avgStrideCad = strideLaps.reduce((sum, l) => sum + l.avgCadence, 0) / strideLaps.length;
+              const avgStridePow = strideLaps.reduce((sum, l) => sum + l.avgPower, 0) / strideLaps.length;
+              lines.push(``);
+              lines.push(`  📊 Resumo dos ${strideLaps.length} strides:`);
+              lines.push(`     Pace médio: ${fmtPace(avgStridePace)} · Dist média: ${Math.round(avgStrideDist)}m · Cadência: ${Math.round(avgStrideCad)} spm · Potência: ${Math.round(avgStridePow)}W`);
+            }
+
+            lines.push(``);
+          }
+        }
+
+        // ── Voltas por km ────────────────────────────────────────────────────
+        const kmLapGroup = lapList.find((g) => g.type === 10 && g.lapDistance === 100000);
         if (kmLapGroup && kmLapGroup.lapItemList.length > 0) {
           const fastIdx = kmLapGroup.fastLapIndexList ?? [];
-          lines.push(`━━━ Voltas ━━━`);
+          lines.push(`━━━ Voltas (auto-lap 1km) ━━━`);
           lines.push(`  # | Dist    | Pace      | FC  | Cadência | Potência | Subida`);
           lines.push(`  --|---------|-----------|-----|----------|----------|-------`);
           let lapNum = 0;
           for (const lap of kmLapGroup.lapItemList) {
             const lapDistKm = lap.distance / 100000;
-            if (lapDistKm < 0.1) continue; // skip tiny GPS fragments
+            if (lapDistKm < 0.1) continue;
 
             lapNum++;
             const isFast = fastIdx.includes(lap.lapIndex);
 
-            // Show distance in meters if < 1km, in km if >= 1km
             const distStr = lapDistKm < 1.0
               ? `${Math.round(lap.distance / 100)}m`
               : `${lapDistKm.toFixed(2)}km`;
